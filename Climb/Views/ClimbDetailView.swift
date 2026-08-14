@@ -15,9 +15,10 @@ struct ClimbDetailView: View {
                         TextField("Name", text: $climb.name)
                             .font(.largeTitle.weight(.bold))
                             .textInputAutocapitalization(.words)
-                        Text(climb.summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        if !climb.tags.isEmpty {
+                            tagPills
+                                .padding(.top, 6)
+                        }
                     }
                     .plainRow()
                 }
@@ -33,13 +34,19 @@ struct ClimbDetailView: View {
                         }
                     }
                 } header: {
-                    Text("History")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
-                        .padding(.top, 10)
-                        .padding(.bottom, 2)
-                        .plainRow()
+                    HStack {
+                        Text("History")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(climb.summary)
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .foregroundStyle(.secondary)
+                    .textCase(nil)
+                    .padding(.top, 10)
+                    .padding(.bottom, 2)
+                    .plainRow()
                 }
             }
             .listStyle(.plain)
@@ -52,6 +59,21 @@ struct ClimbDetailView: View {
                 }
             }
             .presentationBackground(Color.black)
+        }
+    }
+
+    /// Gray pills, one per tag. A plain HStack is fine while tags are a single
+    /// placeholder; revisit with a wrapping layout when climbs carry more of them.
+    private var tagPills: some View {
+        HStack(spacing: 6) {
+            ForEach(climb.tags, id: \.self) { tag in
+                Text("#\(tag)")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.25), in: Capsule())
+            }
         }
     }
 

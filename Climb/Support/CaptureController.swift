@@ -27,11 +27,18 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
 
     let session = AVCaptureSession()
 
-    /// Called with the finished recording and the timestamp recording stopped.
-    var onFinish: ((URL, Date) -> Void)?
+    /// Called with the finished recording, its LiDAR depth sidecar (nil when the
+    /// device has no LiDAR), and the timestamp recording stopped.
+    var onFinish: ((URL, URL?, Date) -> Void)?
 
     private let output = AVCaptureMovieFileOutput()
+    private let depthOutput = AVCaptureDepthDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.andrewchang.Climb.capture")
+    /// Owns `depthRecorder`; depth frames and file writes never touch another queue.
+    private let depthQueue = DispatchQueue(label: "com.andrewchang.Climb.depth")
+    private var depthRecorder: DepthRecorder?
+    /// Set during configuration when the LiDAR camera and depth output are live.
+    private var capturesDepth = false
     private var ticker: AnyCancellable?
     private var startedAt: Date?
     private var isSimulating = false
@@ -82,6 +89,7 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
                         continuation.resume(returning: false); return
                     }
                     self.session.addOutput(self.output)
+                    self.configureDepthIfAvailable(on: camera)
 
                     self.baseZoomFactor = Self.baseZoomFactor(for: camera)
                     if (try? camera.lockForConfiguration()) != nil {
@@ -125,8 +133,41 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Prefers the widest virtual device so one camera can cover ultra-wide through telephoto.
+    /// Depth rides alongside the movie output as a best-effort extra: the LiDAR camera
+    /// only exposes the wide lens, so this is a no-op on phones without LiDAR and the
+    /// video path is identical either way.
+    private func configureDepthIfAvailable(on camera: AVCaptureDevice) {
+        guard camera.deviceType == .builtInLiDARDepthCamera,
+              session.canAddOutput(depthOutput) else { return }
+        session.addOutput(depthOutput)
+
+        // Raw sensor readings — unreadable spots stay NaN rather than being smoothed
+        // over. Flip to true for hole-filled, temporally filtered maps.
+        depthOutput.isFilteringEnabled = false
+        depthOutput.setDelegate(self, callbackQueue: depthQueue)
+
+        // Densest Float16 depth the active video format can pair with (320×240 on
+        // current hardware).
+        let depthFormats = camera.activeFormat.supportedDepthDataFormats.filter {
+            CMFormatDescriptionGetMediaSubType($0.formatDescription) == kCVPixelFormatType_DepthFloat16
+        }
+        if let best = depthFormats.max(by: {
+            CMVideoFormatDescriptionGetDimensions($0.formatDescription).width
+                < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
+        }), (try? camera.lockForConfiguration()) != nil {
+            camera.activeDepthDataFormat = best
+            camera.unlockForConfiguration()
+        }
+        capturesDepth = true
+    }
+
+    /// Prefers the LiDAR camera when the phone has one — it's the only device that can
+    /// stream depth, at the price of losing the 0.5× ultra-wide stop. Otherwise the
+    /// widest virtual device, so one camera can cover ultra-wide through telephoto.
     private static func bestBackCamera() -> AVCaptureDevice? {
+        if let lidar = AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) {
+            return lidar
+        }
         let preference: [AVCaptureDevice.DeviceType] = [
             .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera,
         ]
@@ -202,6 +243,10 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("attempt-\(UUID().uuidString).mov")
+        if capturesDepth {
+            let depthURL = url.deletingPathExtension().appendingPathExtension("depth")
+            depthQueue.async { self.depthRecorder = DepthRecorder(url: depthURL) }
+        }
         sessionQueue.async {
             self.output.startRecording(to: url, recordingDelegate: self)
         }
@@ -221,7 +266,7 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
                 let stoppedAt = Date()
                 await MainActor.run {
                     self.status = .ready
-                    self.onFinish?(url, stoppedAt)
+                    self.onFinish?(url, nil, stoppedAt)
                 }
             }
             return
@@ -242,11 +287,28 @@ extension CaptureController: AVCaptureFileOutputRecordingDelegate {
                     from connections: [AVCaptureConnection],
                     error: (any Error)?) {
         let stoppedAt = Date()
-        DispatchQueue.main.async {
-            self.status = .ready
-            guard error == nil else { return }
-            self.onFinish?(outputFileURL, stoppedAt)
+        // Hop through the depth queue so the sidecar is sealed — and no late frame can
+        // reopen it — before anyone hears the recording is done.
+        depthQueue.async {
+            let depthURL = self.depthRecorder?.finish()
+            self.depthRecorder = nil
+            DispatchQueue.main.async {
+                self.status = .ready
+                guard error == nil else { return }
+                self.onFinish?(outputFileURL, depthURL, stoppedAt)
+            }
         }
+    }
+}
+
+extension CaptureController: AVCaptureDepthDataOutputDelegate {
+    func depthDataOutput(_ output: AVCaptureDepthDataOutput,
+                         didOutput depthData: AVDepthData,
+                         timestamp: CMTime,
+                         connection: AVCaptureConnection) {
+        // Runs on depthQueue; the recorder only exists between start and stop, so this
+        // is a no-op while idle.
+        depthRecorder?.append(depthData, at: timestamp)
     }
 }
 

@@ -152,6 +152,7 @@ struct SessionDetailView: View {
         attempt.climb = activeClimb
         attempt.videoFilename = captured.videoFilename
         attempt.thumbnailFilename = captured.thumbnailFilename
+        attempt.depthFilename = captured.depthFilename
         attempt.videoDuration = captured.duration
         attempt.restSeconds = captured.restSeconds
         attempt.notes = captured.notes

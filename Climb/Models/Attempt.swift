@@ -11,6 +11,8 @@ final class Attempt {
     /// container path changing between installs.
     var videoFilename: String?
     var thumbnailFilename: String?
+    /// LiDAR depth sidecar (`DepthRecorder` format); nil when the phone couldn't capture depth.
+    var depthFilename: String?
 
     var videoDuration: TimeInterval = 0
     var restSeconds: TimeInterval = 0
@@ -37,6 +39,10 @@ final class Attempt {
 
     var thumbnailURL: URL? {
         thumbnailFilename.map { VideoStore.directory.appendingPathComponent($0) }
+    }
+
+    var depthURL: URL? {
+        depthFilename.map { VideoStore.directory.appendingPathComponent($0) }
     }
 }
 

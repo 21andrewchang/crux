@@ -5,6 +5,7 @@ import SwiftUI
 struct CapturedAttempt {
     var videoFilename: String
     var thumbnailFilename: String?
+    var depthFilename: String?
     var duration: TimeInterval
     var restSeconds: TimeInterval
     var notes: String
@@ -20,7 +21,7 @@ struct AttemptFlowView: View {
     private enum Phase: Equatable {
         case capture
         case processing
-        case review(video: String, thumbnail: String?, duration: TimeInterval, restStart: Date)
+        case review(video: String, thumbnail: String?, depth: String?, duration: TimeInterval, restStart: Date)
     }
 
     @StateObject private var capture = CaptureController()
@@ -34,11 +35,12 @@ struct AttemptFlowView: View {
             case .processing:
                 Color.black.ignoresSafeArea()
                 ProgressView().controlSize(.large).tint(.white)
-            case let .review(video, thumbnail, duration, restStart):
+            case let .review(video, thumbnail, depth, duration, restStart):
                 AttemptReviewView(
                     ordinal: ordinal,
                     videoFilename: video,
                     thumbnailFilename: thumbnail,
+                    depthFilename: depth,
                     duration: duration,
                     restStart: restStart,
                     onFinish: onFinish,
@@ -48,7 +50,9 @@ struct AttemptFlowView: View {
         }
         .animation(.smooth(duration: 0.3), value: phase)
         .task {
-            capture.onFinish = { url, stoppedAt in ingest(url: url, stoppedAt: stoppedAt) }
+            capture.onFinish = { url, depthURL, stoppedAt in
+                ingest(url: url, depthURL: depthURL, stoppedAt: stoppedAt)
+            }
             await capture.prepare()
         }
         .onDisappear { capture.teardown() }
@@ -222,12 +226,13 @@ struct AttemptFlowView: View {
 
     /// Moves the recording into permanent storage and flips to review. The rest timer
     /// runs from `stoppedAt` — the moment the user hit stop, not the moment ingest ends.
-    private func ingest(url: URL, stoppedAt: Date) {
+    private func ingest(url: URL, depthURL: URL?, stoppedAt: Date) {
         Task {
-            let result = await VideoStore.ingest(recordingAt: url, attemptID: attemptID)
+            let result = await VideoStore.ingest(recordingAt: url, depthAt: depthURL, attemptID: attemptID)
             await MainActor.run {
                 phase = .review(video: result.video,
                                 thumbnail: result.thumbnail,
+                                depth: result.depth,
                                 duration: result.duration,
                                 restStart: stoppedAt)
             }
@@ -249,6 +254,7 @@ private struct AttemptReviewView: View {
     let ordinal: Int
     let videoFilename: String
     let thumbnailFilename: String?
+    let depthFilename: String?
     let duration: TimeInterval
     let restStart: Date
     var onFinish: (CapturedAttempt) -> Void
@@ -295,6 +301,10 @@ private struct AttemptReviewView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Discard", role: .destructive) {
                         try? FileManager.default.removeItem(at: videoURL)
+                        if let depthFilename {
+                            try? FileManager.default.removeItem(
+                                at: VideoStore.directory.appendingPathComponent(depthFilename))
+                        }
                         onDiscard()
                     }
                 }
@@ -304,6 +314,7 @@ private struct AttemptReviewView: View {
                     onFinish(CapturedAttempt(
                         videoFilename: videoFilename,
                         thumbnailFilename: thumbnailFilename,
+                        depthFilename: depthFilename,
                         duration: duration,
                         restSeconds: Date().timeIntervalSince(restStart),
                         notes: notes

@@ -10,9 +10,12 @@ enum VideoStore {
         return dir
     }()
 
-    /// Moves a freshly captured recording into permanent storage and renders its poster
-    /// frame, so inline rows can draw immediately without touching AVFoundation.
-    static func ingest(recordingAt source: URL, attemptID: UUID) async -> (video: String, thumbnail: String?, duration: TimeInterval) {
+    /// Moves a freshly captured recording (and its LiDAR depth sidecar, when one was
+    /// captured) into permanent storage and renders its poster frame, so inline rows can
+    /// draw immediately without touching AVFoundation.
+    static func ingest(recordingAt source: URL, depthAt depthSource: URL?, attemptID: UUID) async
+        -> (video: String, thumbnail: String?, depth: String?, duration: TimeInterval)
+    {
         let videoName = "\(attemptID.uuidString).mov"
         let destination = directory.appendingPathComponent(videoName)
         try? FileManager.default.removeItem(at: destination)
@@ -22,10 +25,20 @@ enum VideoStore {
             try? FileManager.default.copyItem(at: source, to: destination)
         }
 
+        var depthName: String?
+        if let depthSource {
+            let name = "\(attemptID.uuidString).depth"
+            let depthDestination = directory.appendingPathComponent(name)
+            try? FileManager.default.removeItem(at: depthDestination)
+            if (try? FileManager.default.moveItem(at: depthSource, to: depthDestination)) != nil {
+                depthName = name
+            }
+        }
+
         let asset = AVURLAsset(url: destination)
         let duration = (try? await asset.load(.duration).seconds) ?? 0
         let thumbnailName = await renderThumbnail(for: asset, attemptID: attemptID)
-        return (videoName, thumbnailName, duration.isFinite ? duration : 0)
+        return (videoName, thumbnailName, depthName, duration.isFinite ? duration : 0)
     }
 
     private static func renderThumbnail(for asset: AVURLAsset, attemptID: UUID) async -> String? {
@@ -43,7 +56,7 @@ enum VideoStore {
     }
 
     static func delete(_ attempt: Attempt) {
-        for url in [attempt.videoURL, attempt.thumbnailURL].compactMap({ $0 }) {
+        for url in [attempt.videoURL, attempt.thumbnailURL, attempt.depthURL].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: url)
         }
     }

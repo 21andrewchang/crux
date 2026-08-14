@@ -91,6 +91,11 @@ struct NoteEditor: UIViewRepresentable {
         textView.typingAttributes = NoteDocument.bodyAttributes
         textView.attributedText = NSAttributedString(string: "", attributes: NoteDocument.bodyAttributes)
 
+        // Quote bars are drawn by the layout fragments themselves (`QuoteLayoutFragment`),
+        // vended from the coordinator. Nil under a TextKit 1 fallback, in which case the
+        // quotes still work — indent and colour — just without the bar.
+        textView.textLayoutManager?.delegate = context.coordinator
+
         context.coordinator.textView = textView
         context.coordinator.attachAccessoryView(to: textView)
         context.coordinator.attachPlaceholder(to: textView)
@@ -454,7 +459,7 @@ struct NoteEditor: UIViewRepresentable {
         /// empty line it just made means there is nothing more to add: that line drops
         /// out of the quote and becomes ordinary text, in place.
         private func leaveQuoteIfEmpty(at range: NSRange) -> Bool {
-            guard let textView, quoteID(at: range.location) != nil else { return false }
+            guard let textView, let id = quoteID(at: range.location) else { return false }
             let storage = textView.textStorage
             let string = storage.string as NSString
             let line = string.lineRange(for: NSRange(location: range.location, length: 0))
@@ -477,6 +482,18 @@ struct NoteEditor: UIViewRepresentable {
                 storage.beginEditing()
                 storage.removeAttribute(NoteDocument.noteQuote, range: line)
                 storage.addAttributes(NoteDocument.bodyAttributes, range: line)
+                // The paragraph above keeps its exact text and attributes, so TextKit
+                // would keep its cached layout fragment too — one drawn back when the
+                // quote continued into this line, bar running past its text with no
+                // cap. Re-applying its attributes marks it edited, and the fragment is
+                // vended again with the bar closed off.
+                if line.location > 0 {
+                    let previous = string.lineRange(for: NSRange(location: line.location - 1, length: 0))
+                    if storage.attribute(NoteDocument.noteQuote, at: previous.location,
+                                         effectiveRange: nil) as? UUID == id {
+                        storage.addAttributes(NoteDocument.quoteAttributes(for: id), range: previous)
+                    }
+                }
                 storage.endEditing()
                 isRestyling = false
                 textView.selectedRange = NSRange(location: line.location, length: 0)
@@ -678,6 +695,45 @@ struct NoteEditor: UIViewRepresentable {
             ])
             textView.inputAccessoryView = container
         }
+    }
+}
+
+extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
+    /// A paragraph bound to an attempt lays out with a quote bar beside it. The bar's
+    /// caps go only at the run's real edges, so consecutive bound paragraphs — however
+    /// the text wraps or splits — read as one bar.
+    func textLayoutManager(_ textLayoutManager: NSTextLayoutManager,
+                           textLayoutFragmentFor location: NSTextLocation,
+                           in textElement: NSTextElement) -> NSTextLayoutFragment {
+        guard let textView,
+              let contentManager = textLayoutManager.textContentManager,
+              let elementRange = textElement.elementRange
+        else { return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange) }
+
+        let storage = textView.textStorage
+        let start = contentManager.offset(from: contentManager.documentRange.location,
+                                          to: elementRange.location)
+        guard start >= 0, start < storage.length,
+              let id = storage.attribute(NoteDocument.noteQuote, at: start, effectiveRange: nil) as? UUID
+        else { return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange) }
+
+        let string = storage.string as NSString
+        let fragment = QuoteLayoutFragment(textElement: textElement, range: textElement.elementRange)
+
+        if start > 0 {
+            let previousLine = string.lineRange(for: NSRange(location: start - 1, length: 0))
+            fragment.drawsTopCap = storage.attribute(NoteDocument.noteQuote,
+                                                     at: previousLine.location,
+                                                     effectiveRange: nil) as? UUID != id
+        }
+
+        let end = start + contentManager.offset(from: elementRange.location, to: elementRange.endLocation)
+        if end < storage.length {
+            fragment.drawsBottomCap = storage.attribute(NoteDocument.noteQuote,
+                                                        at: end,
+                                                        effectiveRange: nil) as? UUID != id
+        }
+        return fragment
     }
 }
 

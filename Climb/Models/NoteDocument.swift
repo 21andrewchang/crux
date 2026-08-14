@@ -26,7 +26,9 @@ enum NoteDocument {
     static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        paragraph.paragraphSpacing = 2
+        // A step more than body text, so the quote reads as a block that ends before
+        // whatever comes next rather than running into it.
+        paragraph.paragraphSpacing = 8
         paragraph.firstLineHeadIndent = quoteIndent
         paragraph.headIndent = quoteIndent
 

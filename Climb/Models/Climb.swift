@@ -12,6 +12,11 @@ final class Climb {
     var name: String = ""
     var createdAt: Date = Date()
 
+    /// Style/feature labels like "overhang". Stored without the leading "#"; the UI adds
+    /// it. Defaulting to overhang seeds every climb with a placeholder while tags are
+    /// display-only.
+    var tags: [String] = ["overhang"]
+
     /// Nullify, not cascade: the attempts belong to their sessions. Retiring a climb
     /// from the library must not delete the videos it was tagged on.
     @Relationship(deleteRule: .nullify, inverse: \Attempt.climb)
