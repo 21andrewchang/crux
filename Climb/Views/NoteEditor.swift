@@ -482,26 +482,43 @@ struct NoteEditor: UIViewRepresentable {
                 storage.beginEditing()
                 storage.removeAttribute(NoteDocument.noteQuote, range: line)
                 storage.addAttributes(NoteDocument.bodyAttributes, range: line)
-                // The paragraph above keeps its exact text and attributes, so TextKit
-                // would keep its cached layout fragment too — one drawn back when the
-                // quote continued into this line, bar running past its text with no
-                // cap. Re-applying its attributes marks it edited, and the fragment is
-                // vended again with the bar closed off.
+                storage.endEditing()
+                isRestyling = false
+                // An attribute-only edit relays out the cached fragments in place; the
+                // delegate is not asked again, so this line would keep its quote bar —
+                // and the paragraph above, drawn back when the quote continued into
+                // this line, would keep running its bar past the end with no cap.
+                // Invalidating both lines makes the fragments get vended afresh.
+                var stale = line
                 if line.location > 0 {
                     let previous = string.lineRange(for: NSRange(location: line.location - 1, length: 0))
                     if storage.attribute(NoteDocument.noteQuote, at: previous.location,
                                          effectiveRange: nil) as? UUID == id {
-                        storage.addAttributes(NoteDocument.quoteAttributes(for: id), range: previous)
+                        stale = NSUnionRange(stale, previous)
                     }
                 }
-                storage.endEditing()
-                isRestyling = false
+                invalidateLayoutFragments(in: stale)
                 textView.selectedRange = NSRange(location: line.location, length: 0)
                 persist()
             }
 
             textView.typingAttributes = NoteDocument.bodyAttributes
             return true
+        }
+
+        /// Throws away the layout fragments covering `range` so they are vended again
+        /// through the layout-manager delegate. Needed after attribute-only restyles:
+        /// TextKit reuses the cached fragment objects for those, and a line that left
+        /// a quote would keep drawing the quote's bar.
+        private func invalidateLayoutFragments(in range: NSRange) {
+            guard let layoutManager = textView?.textLayoutManager,
+                  let contentManager = layoutManager.textContentManager else { return }
+            let document = contentManager.documentRange
+            guard let start = contentManager.location(document.location, offsetBy: range.location),
+                  let end = contentManager.location(document.location, offsetBy: NSMaxRange(range)),
+                  let textRange = NSTextRange(location: start, end: end)
+            else { return }
+            layoutManager.invalidateLayout(for: textRange)
         }
 
         /// Whether this edit deletes exactly the line break that ends a row's own line.
