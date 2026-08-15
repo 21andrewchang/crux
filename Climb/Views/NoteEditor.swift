@@ -66,7 +66,12 @@ struct NoteEditor: UIViewRepresentable {
     /// Presents the toolbar action. Owned by the SwiftUI layer so capture flow stays there.
     var onStartAttempt: () -> Void
     var onAddClimb: () -> Void
+    /// Shared with the system bottom bar's stopwatch item, so the clock agrees
+    /// wherever the bar happens to be.
+    var stopwatch: StopwatchModel
     var onOpenAttempt: (UUID) -> Void
+    /// A tapped clock token in a quote: open the attempt with its video at that moment.
+    var onSeekAttempt: (UUID, TimeInterval) -> Void
     /// Resolves a marker ID to a climb; returning nil is how the editor tells the two
     /// kinds of marker apart, and how it drops references to climbs that are gone.
     var climbSnapshot: (UUID) -> ClimbSnapshot?
@@ -82,22 +87,35 @@ struct NoteEditor: UIViewRepresentable {
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
         textView.alwaysBounceVertical = true
-        // `.interactive` drags the keyboard only: the accessory bar rides above your
-        // finger, so it beaches at the bottom edge and then pops out of existence when
-        // the text view resigns. `.interactiveWithAccessory` drags the bar too.
+        // `.interactive` would drag the keyboard only: the accessory bar rides
+        // above your finger, so it beaches at the bottom edge and then pops out
+        // of existence when the text view resigns. `.interactiveWithAccessory`
+        // drags the bar too.
         textView.keyboardDismissMode = .interactiveWithAccessory
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 16, bottom: 120, right: 16)
+        // Top clears the date line above the title; bottom clears the pinned bar.
+        textView.textContainerInset = UIEdgeInsets(top: 32, left: 16, bottom: 120, right: 16)
+        // The view runs edge to edge under the bars; the resting inset is owned
+        // by `safeAreaInsetsDidChange` below, not inferred by UIKit — automatic
+        // adjustment would stack onto the keyboard inset this view manages itself.
+        textView.contentInsetAdjustmentBehavior = .never
         textView.textContainer.lineFragmentPadding = 0
         textView.typingAttributes = NoteDocument.bodyAttributes
         textView.attributedText = NSAttributedString(string: "", attributes: NoteDocument.bodyAttributes)
 
-        // Quote bars are drawn by the layout fragments themselves (`QuoteLayoutFragment`),
-        // vended from the coordinator. Nil under a TextKit 1 fallback, in which case the
-        // quotes still work — indent and colour — just without the bar.
+        // Stamped note lines draw a bookmark in their gutter, vended per paragraph.
         textView.textLayoutManager?.delegate = context.coordinator
+
+        // Clock tokens in quotes seek the attempt's video. The recognizer only ever
+        // receives touches that land on a token — everything else still just moves
+        // the caret — and it cancels the touch, so a tapped token doesn't also focus.
+        let timestampTap = UITapGestureRecognizer(target: context.coordinator,
+                                                  action: #selector(Coordinator.timestampTapped(_:)))
+        timestampTap.delegate = context.coordinator
+        textView.addGestureRecognizer(timestampTap)
 
         context.coordinator.textView = textView
         context.coordinator.attachAccessoryView(to: textView)
+        context.coordinator.attachDateLine(to: textView, date: session.createdAt)
         context.coordinator.attachPlaceholder(to: textView)
         context.coordinator.reloadDocument()
         return textView
@@ -118,7 +136,7 @@ struct NoteEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: NoteEditor
         weak var textView: UITextView?
-        private var accessoryHost: UIHostingController<KeyboardToolbar>?
+        private var accessoryHost: UIHostingController<EditingToolbar>?
         private weak var placeholderLabel: UILabel?
         private var isRestyling = false
         /// An edit held back pending confirmation, as `(range, replacement)`.
@@ -181,20 +199,49 @@ struct NoteEditor: UIViewRepresentable {
             }
             // Inside a quote, typing carries the quote's style *and* its binding, so
             // what gets typed there is part of that attempt's notes.
-            if let id = quoteID(at: textView.selectedRange.location) {
+            if let id = quoteID(onLineAt: textView.selectedRange.location) {
                 textView.typingAttributes = NoteDocument.quoteAttributes(for: id)
             } else {
                 textView.typingAttributes = NoteDocument.bodyAttributes
             }
         }
 
+        /// The attempt whose notes the line at `location` is. Line-shaped on purpose:
+        /// tapping anywhere on a quote's line means editing that attempt's notes, even
+        /// mid-word or at the line's start.
+        private func quoteID(onLineAt location: Int) -> UUID? {
+            guard let storage = textView?.textStorage, storage.length > 0 else { return nil }
+            let line = (storage.string as NSString)
+                .lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+            var found: UUID?
+            storage.enumerateAttribute(NoteDocument.noteQuote, in: line) { value, _, stop in
+                if let id = value as? UUID {
+                    found = id
+                    stop.pointee = true
+                }
+            }
+            // The document's empty last line has no characters to carry a binding, so
+            // typing at the end of the notes would silently fall out of them. That
+            // line belongs to the quote whose break sits just above it.
+            if found == nil, line.length == 0, line.location > 0 {
+                found = storage.attribute(NoteDocument.noteQuote, at: line.location - 1,
+                                          effectiveRange: nil) as? UUID
+            }
+            return found
+        }
+
         /// Past the end of the notes the caret is in, if it is in any — where a new block
         /// can go without cutting them off from their row.
         private func endOfQuote(at location: Int) -> Int {
             guard let storage = textView?.textStorage, storage.length > 0 else { return location }
+            let full = NSRange(location: 0, length: storage.length)
             for index in [location - 1, location] where index >= 0 && index < storage.length {
                 var run = NSRange(location: 0, length: 0)
-                guard storage.attribute(NoteDocument.noteQuote, at: index, effectiveRange: &run) != nil else {
+                // The longest run, not the nearest: a quote is several attribute runs —
+                // clock tokens carry their own font and colour — and the caret can sit
+                // in any of them.
+                guard storage.attribute(NoteDocument.noteQuote, at: index,
+                                        longestEffectiveRange: &run, in: full) != nil else {
                     continue
                 }
                 return min(NSMaxRange(run), storage.length)
@@ -214,6 +261,25 @@ struct NoteEditor: UIViewRepresentable {
             return nil
         }
 
+        // MARK: Date line
+
+        /// The session's date sits in the note itself, above the title — the top
+        /// bar stays bare, the way Notes does it. It scrolls away with the content.
+        func attachDateLine(to textView: UITextView, date: Date) {
+            let label = UILabel()
+            label.text = date.formatted(date: .long, time: .shortened)
+            label.font = .preferredFont(forTextStyle: .footnote)
+            label.textColor = .secondaryLabel
+            label.isUserInteractionEnabled = false
+            label.translatesAutoresizingMaskIntoConstraints = false
+            textView.addSubview(label)
+
+            NSLayoutConstraint.activate([
+                label.topAnchor.constraint(equalTo: textView.contentLayoutGuide.topAnchor, constant: -2),
+                label.centerXAnchor.constraint(equalTo: textView.frameLayoutGuide.centerXAnchor),
+            ])
+        }
+
         // MARK: Placeholder
 
         /// A label rather than placeholder text in the storage: real text would be
@@ -226,11 +292,11 @@ struct NoteEditor: UIViewRepresentable {
             label.translatesAutoresizingMaskIntoConstraints = false
             textView.addSubview(label)
 
-            // Pinned to the frame, not the content: it only shows when there is nothing
-            // to scroll, and must not drift with contentOffset.
+            // Pinned to the content, where the text will start: the view now rests
+            // with a safe-area content inset, so the frame's top is under the bars.
             let inset = textView.textContainerInset
             NSLayoutConstraint.activate([
-                label.topAnchor.constraint(equalTo: textView.frameLayoutGuide.topAnchor, constant: inset.top),
+                label.topAnchor.constraint(equalTo: textView.contentLayoutGuide.topAnchor, constant: inset.top),
                 label.leadingAnchor.constraint(equalTo: textView.frameLayoutGuide.leadingAnchor, constant: inset.left),
                 label.trailingAnchor.constraint(equalTo: textView.frameLayoutGuide.trailingAnchor, constant: -inset.right),
             ])
@@ -441,10 +507,60 @@ struct NoteEditor: UIViewRepresentable {
                       shouldChangeTextIn range: NSRange,
                       replacementText text: String) -> Bool {
             pendingDeletion = nil
-            if text == "\n", leaveQuoteIfEmpty(at: range) { return false }
+            // A break never goes into a quote: notes are one line per clock. Return
+            // anywhere in one steps the caret out to a fresh body line past the
+            // notes instead, and breaks inside pasted text flatten to spaces.
+            if text.contains("\n"), let id = quoteID(onLineAt: range.location) {
+                if text == "\n" {
+                    // At the head of the note — before its words start — Return reads
+                    // as "make room above": the whole line moves down intact, caret
+                    // riding with it. Anywhere in the words, it steps out as usual.
+                    if range.length == 0, isAtNoteStart(range.location) {
+                        pushNoteLineDown(at: range.location)
+                    } else {
+                        exitQuote(replacing: range)
+                    }
+                } else {
+                    // Words that ride in with a return — an autocorrect commit, a
+                    // pasted line — still land in the note; only the breaks don't.
+                    let flattened = text.replacingOccurrences(of: "\n", with: " ")
+                        .trimmingCharacters(in: .whitespaces)
+                    let attributes = NoteDocument.quoteAttributes(for: id)
+                    performBlockEdit {
+                        $0.replaceCharacters(in: range,
+                                             with: NSAttributedString(string: flattened, attributes: attributes))
+                    }
+                    let caret = range.location + (flattened as NSString).length
+                    if text.hasSuffix("\n") {
+                        exitQuote(replacing: NSRange(location: caret, length: 0))
+                    } else {
+                        textView.selectedRange = NSRange(location: caret, length: 0)
+                    }
+                }
+                return false
+            }
+            // A tap makes UIKit rebuild `typingAttributes` from its own reading of the
+            // context, and the quote binding (a custom key) does not survive. Re-derive
+            // them at the moment of insertion, so typing on a quote's line is always
+            // that attempt's notes rather than unbound body text mid-quote — and, off
+            // a quote's line, is never the quote's: whatever UIKit carried over from
+            // the character behind the caret is replaced outright, so a quote's look
+            // (or its binding) cannot ride past its edge onto a fresh line.
+            if !text.isEmpty {
+                if let id = quoteID(onLineAt: range.location) {
+                    textView.typingAttributes = NoteDocument.quoteAttributes(for: id)
+                } else if textView.typingAttributes[NoteDocument.noteQuote] != nil {
+                    textView.typingAttributes = NoteDocument.bodyAttributes
+                }
+            }
+            // Backspacing into a clock never nibbles at it: the token goes whole, and
+            // the line goes with it once the note's words are already gone.
+            if text.isEmpty, deleteTimestamp(at: range) { return false }
             // Backspacing the break under a row would pull the next line up onto the
             // row's own line, where text cannot be that attempt's notes — or anything
-            // else legible. The row is deleted by deleting the row.
+            // else legible. The row is deleted by deleting the row. An empty line is
+            // the exception: nothing merges up, the line just goes, and the caret
+            // lands beside the row — one more backspace from deleting it.
             if text.isEmpty, mergesIntoBlockLine(range) { return false }
 
             let doomed = attemptMarkers(in: range)
@@ -455,73 +571,136 @@ struct NoteEditor: UIViewRepresentable {
             return false
         }
 
-        /// Return inside the notes breaks a line like anywhere else. Return again on the
-        /// empty line it just made means there is nothing more to add: that line drops
-        /// out of the quote and becomes ordinary text, in place.
-        private func leaveQuoteIfEmpty(at range: NSRange) -> Bool {
-            guard let textView, let id = quoteID(at: range.location) else { return false }
+        /// Whether the caret sits before the note's words begin: at the line start,
+        /// inside the clock, or on the space just after it.
+        private func isAtNoteStart(_ location: Int) -> Bool {
+            guard let storage = textView?.textStorage, storage.length > 0 else { return false }
+            let text = storage.string as NSString
+            let line = text.lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+
+            var wordsStart = line.location
+            if let clock = NoteTimestamp.regex.firstMatch(in: storage.string, options: [], range: line),
+               clock.range.location == line.location {
+                wordsStart = NSMaxRange(clock.range)
+                if wordsStart < NSMaxRange(line), text.character(at: wordsStart) == 0x0020 {
+                    wordsStart += 1
+                }
+            }
+            return location <= wordsStart
+        }
+
+        /// A body break slides in above the note's line, moving it down whole; the
+        /// caret keeps its place in the note.
+        private func pushNoteLineDown(at location: Int) {
+            guard let textView else { return }
+            let storage = textView.textStorage
+            let line = (storage.string as NSString)
+                .lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+            performBlockEdit {
+                $0.insert(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes),
+                          at: line.location)
+            }
+            textView.selectedRange = NSRange(location: min(location + 1, textView.textStorage.length),
+                                             length: 0)
+            syncTypingAttributes()
+        }
+
+        /// Return anywhere in a quote: the quote itself is untouched — no break enters
+        /// it — and the caret lands on a fresh body line just past the notes, back in
+        /// the document proper. A selected run of note text is consumed by the Return
+        /// the way it would be anywhere else.
+        private func exitQuote(replacing range: NSRange) {
+            guard let textView else { return }
+            var caret = range.location
+            performBlockEdit { storage in
+                if range.length > 0 {
+                    storage.replaceCharacters(in: range, with: "")
+                }
+                let end = self.endOfQuote(at: min(range.location, storage.length))
+                // Past a quote ending in its own break, the new line slots in whole;
+                // after an unterminated one, the inserted break first closes the
+                // note's line, and the caret belongs beyond it.
+                let closesLine = end == 0 || (storage.string as NSString).character(at: end - 1) == 0x000A
+                storage.insert(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes),
+                               at: end)
+                caret = closesLine ? end : end + 1
+            }
+            textView.selectedRange = NSRange(location: min(caret, textView.textStorage.length), length: 0)
+            textView.typingAttributes = NoteDocument.bodyAttributes
+        }
+
+        /// The clock token is atomic under deletion: one backspace into it takes the
+        /// whole clock — and, when the note's words are already gone, the line too.
+        /// The first note line folds back to the held-open empty line under its row;
+        /// a later one is removed outright, the caret closing up to the line above.
+        private func deleteTimestamp(at range: NSRange) -> Bool {
+            guard let textView, range.length == 1 else { return false }
             let storage = textView.textStorage
             let string = storage.string as NSString
-            let line = string.lineRange(for: NSRange(location: range.location, length: 0))
-            guard string.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard range.location < storage.length,
+                  quoteID(onLineAt: range.location) != nil
+            else { return false }
+
+            // Backspacing the clock itself, or the space that closes it — deleting
+            // just that space would weld clock and words into unstyled text.
+            let anchor: Int
+            if storage.attribute(NoteDocument.noteTimestamp, at: range.location,
+                                 effectiveRange: nil) != nil {
+                anchor = range.location
+            } else if string.character(at: range.location) == 0x0020, range.location > 0,
+                      storage.attribute(NoteDocument.noteTimestamp, at: range.location - 1,
+                                        effectiveRange: nil) != nil {
+                anchor = range.location - 1
+            } else {
                 return false
             }
 
-            if line.length == 0 {
-                // Already on a bare last line — only the typing needs to leave the quote.
-            } else if isDirectlyUnderRow(line) {
-                // The line under a row is always that attempt's notes, so stepping out
-                // of an empty one means a new line beneath it rather than taking it.
-                let caret = NSMaxRange(line)
-                performBlockEdit {
-                    $0.insert(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes), at: caret)
-                }
-                textView.selectedRange = NSRange(location: min(caret, textView.textStorage.length), length: 0)
-            } else {
-                isRestyling = true
-                storage.beginEditing()
-                storage.removeAttribute(NoteDocument.noteQuote, range: line)
-                storage.addAttributes(NoteDocument.bodyAttributes, range: line)
-                storage.endEditing()
-                isRestyling = false
-                // An attribute-only edit relays out the cached fragments in place; the
-                // delegate is not asked again, so this line would keep its quote bar —
-                // and the paragraph above, drawn back when the quote continued into
-                // this line, would keep running its bar past the end with no cap.
-                // Invalidating both lines makes the fragments get vended afresh.
-                var stale = line
-                if line.location > 0 {
-                    let previous = string.lineRange(for: NSRange(location: line.location - 1, length: 0))
-                    if storage.attribute(NoteDocument.noteQuote, at: previous.location,
-                                         effectiveRange: nil) as? UUID == id {
-                        stale = NSUnionRange(stale, previous)
-                    }
-                }
-                invalidateLayoutFragments(in: stale)
-                textView.selectedRange = NSRange(location: line.location, length: 0)
-                persist()
+            var token = NSRange(location: 0, length: 0)
+            _ = storage.attribute(NoteDocument.noteTimestamp, at: anchor,
+                                  longestEffectiveRange: &token,
+                                  in: NSRange(location: 0, length: storage.length))
+            // The space between clock and words belongs to the clock: it goes too,
+            // so the words are left flush at the line's start.
+            while NSMaxRange(token) < string.length,
+                  string.character(at: NSMaxRange(token)) == 0x0020 {
+                token.length += 1
             }
 
-            textView.typingAttributes = NoteDocument.bodyAttributes
+            let line = string.lineRange(for: NSRange(location: anchor, length: 0))
+            let remainder = (string.substring(with: line) as NSString)
+                .replacingCharacters(in: NSRange(location: token.location - line.location,
+                                                 length: token.length), with: "")
+            let bareToken = remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasBreak = string.character(at: NSMaxRange(line) - 1) == 0x000A
+
+            let doomed: NSRange
+            let caret: Int
+            if !bareToken {
+                // Words still on the line: only the clock goes, and what is left
+                // reads on as a plain note line.
+                doomed = token
+                caret = token.location
+            } else if isDirectlyUnderRow(line) {
+                doomed = NSRange(location: line.location, length: line.length - (hasBreak ? 1 : 0))
+                caret = line.location
+            } else {
+                // Take the line's own break with it — or, at the document's end, the
+                // break above — so no empty quote line is left behind.
+                doomed = hasBreak ? line
+                                  : NSRange(location: line.location - 1, length: line.length + 1)
+                caret = line.location - 1
+            }
+
+            performBlockEdit { $0.replaceCharacters(in: doomed, with: "") }
+            textView.selectedRange = NSRange(location: min(caret, textView.textStorage.length), length: 0)
+            syncTypingAttributes()
             return true
         }
 
-        /// Throws away the layout fragments covering `range` so they are vended again
-        /// through the layout-manager delegate. Needed after attribute-only restyles:
-        /// TextKit reuses the cached fragment objects for those, and a line that left
-        /// a quote would keep drawing the quote's bar.
-        private func invalidateLayoutFragments(in range: NSRange) {
-            guard let layoutManager = textView?.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager else { return }
-            let document = contentManager.documentRange
-            guard let start = contentManager.location(document.location, offsetBy: range.location),
-                  let end = contentManager.location(document.location, offsetBy: NSMaxRange(range)),
-                  let textRange = NSTextRange(location: start, end: end)
-            else { return }
-            layoutManager.invalidateLayout(for: textRange)
-        }
-
-        /// Whether this edit deletes exactly the line break that ends a row's own line.
+        /// Whether this edit deletes exactly the line break that ends a row's own line —
+        /// and would pull real text up onto it. An empty line below is safe to merge:
+        /// deleting either of the two adjacent breaks reads the same, so the default
+        /// deletion is left to run and the caret comes to rest just right of the row.
         private func mergesIntoBlockLine(_ range: NSRange) -> Bool {
             guard let storage = textView?.textStorage, range.length == 1 else { return false }
             let string = storage.string as NSString
@@ -537,7 +716,15 @@ struct NoteEditor: UIViewRepresentable {
                     stop.pointee = true
                 }
             }
-            return isBlock
+            guard isBlock else { return false }
+
+            // Past the end of the document there is no line to pull up at all.
+            let followingStart = NSMaxRange(line)
+            guard followingStart < string.length else { return false }
+            let following = string.lineRange(for: NSRange(location: followingStart, length: 0))
+            let followingIsEmpty = following.length == 1 &&
+                string.character(at: following.location) == 0x000A
+            return !followingIsEmpty
         }
 
         private func isDirectlyUnderRow(_ line: NSRange) -> Bool {
@@ -578,6 +765,54 @@ struct NoteEditor: UIViewRepresentable {
             return ids
         }
 
+        // MARK: Timestamp taps
+
+        /// The clock token under `point`, if the touch really lands on one.
+        /// `closestPosition` happily maps a tap in empty space to faraway text, so the
+        /// hit is confirmed against the caret geometry at that position first.
+        fileprivate func timestamp(at point: CGPoint) -> (id: UUID, seconds: TimeInterval)? {
+            guard let textView, let position = textView.closestPosition(to: point) else { return nil }
+            let caret = textView.caretRect(for: position)
+            guard caret.height > 0, abs(point.y - caret.midY) < caret.height else { return nil }
+
+            let storage = textView.textStorage
+            guard storage.length > 0 else { return nil }
+            let offset = min(textView.offset(from: textView.beginningOfDocument, to: position),
+                             storage.length - 1)
+
+            // On the token itself (hidden, but its characters still anchor the line's
+            // start, under the bookmark). The position sits between characters; the
+            // token can be on either side.
+            if abs(point.x - caret.midX) < 32 {
+                for index in [offset, offset - 1] where index >= 0 {
+                    if let seconds = storage.attribute(NoteDocument.noteTimestamp, at: index,
+                                                       effectiveRange: nil) as? TimeInterval,
+                       let id = storage.attribute(NoteDocument.noteQuote, at: index,
+                                                  effectiveRange: nil) as? UUID {
+                        return (id, seconds)
+                    }
+                }
+            }
+
+            // On the clock drawn at the line's trailing edge: any tap in the reserved
+            // right lane of a stamped line counts.
+            let line = (storage.string as NSString)
+                .lineRange(for: NSRange(location: offset, length: 0))
+            if point.x > textView.bounds.width - NoteDocument.clockReserve - 24,
+               let seconds = storage.attribute(NoteDocument.noteTimestamp, at: line.location,
+                                               effectiveRange: nil) as? TimeInterval,
+               let id = storage.attribute(NoteDocument.noteQuote, at: line.location,
+                                          effectiveRange: nil) as? UUID {
+                return (id, seconds)
+            }
+            return nil
+        }
+
+        @objc func timestampTapped(_ gesture: UITapGestureRecognizer) {
+            guard let textView, let hit = timestamp(at: gesture.location(in: textView)) else { return }
+            parent.onSeekAttempt(hit.id, hit.seconds)
+        }
+
         // MARK: UITextViewDelegate
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -598,12 +833,14 @@ struct NoteEditor: UIViewRepresentable {
             syncTypingAttributes()
             updatePlaceholder()
             persist()
+            (textView as? NoteTextView)?.keepCaretVisible()
         }
 
         /// Moving the caret across the title/body boundary has to resize it too.
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isRestyling else { return }
             syncTypingAttributes()
+            (textView as? NoteTextView)?.keepCaretVisible()
         }
 
         /// The quote in the document *is* the attempt's notes, so it is written through
@@ -692,13 +929,19 @@ struct NoteEditor: UIViewRepresentable {
         // MARK: Keyboard toolbar
 
         func attachAccessoryView(to textView: UITextView) {
-            let toolbar = KeyboardToolbar(
+            let toolbar = EditingToolbar(
+                stopwatch: parent.stopwatch,
                 onAddClimb: { [weak self] in self?.parent.onAddClimb() },
                 onStartAttempt: { [weak self] in self?.parent.onStartAttempt() }
             )
             let host = UIHostingController(rootView: toolbar)
             host.view.backgroundColor = .clear
             host.sizingOptions = [.intrinsicContentSize]
+            // An accessory view straddles the keyboard's safe area, and UIKit feeds
+            // that inset into the hosted SwiftUI content on and off — the bar's
+            // bottom padding would randomly double. The bar spaces itself with its
+            // own padding only.
+            host.safeAreaRegions = []
             accessoryHost = host
 
             let container = AccessoryContainerView()
@@ -716,9 +959,7 @@ struct NoteEditor: UIViewRepresentable {
 }
 
 extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
-    /// A paragraph bound to an attempt lays out with a quote bar beside it. The bar's
-    /// caps go only at the run's real edges, so consecutive bound paragraphs — however
-    /// the text wraps or splits — read as one bar.
+    /// A paragraph opening with a clock token lays out with a bookmark beside it.
     func textLayoutManager(_ textLayoutManager: NSTextLayoutManager,
                            textLayoutFragmentFor location: NSTextLocation,
                            in textElement: NSTextElement) -> NSTextLayoutFragment {
@@ -731,31 +972,98 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         let start = contentManager.offset(from: contentManager.documentRange.location,
                                           to: elementRange.location)
         guard start >= 0, start < storage.length,
-              let id = storage.attribute(NoteDocument.noteQuote, at: start, effectiveRange: nil) as? UUID
+              let seconds = storage.attribute(NoteDocument.noteTimestamp, at: start,
+                                              effectiveRange: nil) as? TimeInterval
         else { return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange) }
 
-        let string = storage.string as NSString
-        let fragment = QuoteLayoutFragment(textElement: textElement, range: textElement.elementRange)
-
-        if start > 0 {
-            let previousLine = string.lineRange(for: NSRange(location: start - 1, length: 0))
-            fragment.drawsTopCap = storage.attribute(NoteDocument.noteQuote,
-                                                     at: previousLine.location,
-                                                     effectiveRange: nil) as? UUID != id
-        }
-
-        let end = start + contentManager.offset(from: elementRange.location, to: elementRange.endLocation)
-        if end < storage.length {
-            fragment.drawsBottomCap = storage.attribute(NoteDocument.noteQuote,
-                                                        at: end,
-                                                        effectiveRange: nil) as? UUID != id
-        }
+        let fragment = BookmarkLayoutFragment(textElement: textElement, range: textElement.elementRange)
+        fragment.clock = NoteTimestamp.display(for: seconds)
+        fragment.containerWidth = textView.textContainer.size.width
         return fragment
     }
 }
 
-/// A text view whose caret stays text-sized on a climb heading's line.
+extension NoteEditor.Coordinator: UIGestureRecognizerDelegate {
+    /// Only touches on a clock token reach the recognizer, so every other tap falls
+    /// through to the text view untouched.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard let textView else { return false }
+        return timestamp(at: touch.location(in: textView)) != nil
+    }
+}
+
+/// A text view whose caret stays text-sized on a climb heading's line, and which
+/// keeps the caret above the keyboard itself. The SwiftUI layer opts out of keyboard
+/// avoidance (`.ignoresSafeArea(.keyboard)`, for the pinned toolbar's sake), so the
+/// view runs full-height under the keyboard and owns its own insets.
 final class NoteTextView: UITextView {
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(keyboardWillChangeFrame(_:)),
+                                               name: UIResponder.keyboardWillChangeFrameNotification,
+                                               object: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The view runs edge to edge under the status bar and the nav bar; at rest the
+    /// content still starts below them, and scrolling carries it underneath. Owned
+    /// here because automatic adjustment is off (it would fight the keyboard inset).
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        let wasAtTop = contentOffset.y <= -contentInset.top + 1
+        contentInset.top = safeAreaInsets.top
+        verticalScrollIndicatorInsets.top = safeAreaInsets.top
+        if wasAtTop { contentOffset.y = -contentInset.top }
+    }
+
+    @objc private func keyboardWillChangeFrame(_ note: Notification) {
+        guard window != nil,
+              let endFrame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        else { return }
+        let overlap = max(0, bounds.maxY - convert(endFrame, from: nil).minY)
+        contentInset.bottom = overlap
+        verticalScrollIndicatorInsets.bottom = overlap
+        guard overlap > 0, isFirstResponder else { return }
+        // After the inset lands, bring the caret back into the visible strip — this
+        // is what moves the note up when a tap below the keyboard's edge focuses it.
+        DispatchQueue.main.async { [weak self] in self?.keepCaretVisible() }
+    }
+
+    /// UIKit's own selection autoscroll is suppressed below, so this is the only
+    /// thing that moves the page for the caret — and it moves it only when the
+    /// caret is actually hidden (under the keyboard, or off the top). A caret
+    /// anywhere in the visible strip stays put.
+    func keepCaretVisible() {
+        guard let position = selectedTextRange?.end else { return }
+        let caret = caretRect(for: position)
+        guard caret.origin.y.isFinite, caret.height > 0 else { return }
+        let visibleTop = contentOffset.y + safeAreaInsets.top
+        let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
+        guard caret.maxY > visibleBottom - 8 || caret.minY < visibleTop else { return }
+        programmaticScroll = true
+        scrollRectToVisible(caret.insetBy(dx: 0, dy: -24), animated: true)
+        programmaticScroll = false
+    }
+
+    /// UITextView autoscrolls the selection into view on focus and on every tap,
+    /// and with the tall custom line fragments it drags the page around even when
+    /// the caret was already visible. Drop every scroll we didn't ask for; user
+    /// pans go through the property setter (animated: false) and are untouched.
+    private var programmaticScroll = false
+
+    override func scrollRectToVisible(_ rect: CGRect, animated: Bool) {
+        guard programmaticScroll else { return }
+        super.scrollRectToVisible(rect, animated: animated)
+    }
+
+    override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
+        if animated && !programmaticScroll && !isDragging && !isDecelerating { return }
+        super.setContentOffset(contentOffset, animated: animated)
+    }
+
     /// UIKit sizes the caret to the line fragment, and a climb row makes its line as
     /// tall as the tag — so parking the cursor beside one drew a 52pt bar next to a
     /// short chip. Cut it back to text height, centred on the tag. Attempt rows keep
@@ -790,10 +1098,13 @@ final class NoteTextView: UITextView {
 }
 
 /// `inputAccessoryView` sizes from the intrinsic height, which SwiftUI hosting alone
-/// does not supply reliably here.
-final class AccessoryContainerView: UIView {
-    override init(frame: CGRect) {
-        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 60))
+/// does not supply reliably here. A `UIInputView` rather than a plain view: the system
+/// draws its keyboard backdrop behind plain accessory views, and only an input view
+/// with the `.default` style opts out of it — the bar floats over the note.
+/// 64 = 8pt padding + the 48pt capsules + 8pt of daylight above the keyboard.
+final class AccessoryContainerView: UIInputView {
+    init() {
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 64), inputViewStyle: .default)
         backgroundColor = .clear
         autoresizingMask = .flexibleWidth
     }
@@ -801,6 +1112,6 @@ final class AccessoryContainerView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 60)
+        CGSize(width: UIView.noIntrinsicMetric, height: 64)
     }
 }

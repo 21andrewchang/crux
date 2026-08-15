@@ -17,6 +17,15 @@ final class Climb {
     /// display-only.
     var tags: [String] = ["overhang"]
 
+    /// Wall photo (normalized by the detector) and the processed route render built
+    /// from it. Files live in `WallStore`; names are stable per climb.
+    var wallPhotoName: String? = nil
+    var routeImageName: String? = nil
+    /// Detection color key from `HoldDetector.supportedColors` — remembered so the
+    /// color chips can show which color produced the current render.
+    var routeColorName: String? = nil
+    var routeHoldCount: Int = 0
+
     /// Nullify, not cascade: the attempts belong to their sessions. Retiring a climb
     /// from the library must not delete the videos it was tagged on.
     @Relationship(deleteRule: .nullify, inverse: \Attempt.climb)
@@ -36,6 +45,9 @@ final class Climb {
     var lastAttemptAt: Date? {
         attempts.map(\.createdAt).max()
     }
+
+    var wallPhotoURL: URL? { WallStore.url(for: wallPhotoName) }
+    var routeImageURL: URL? { WallStore.url(for: routeImageName) }
 
     /// How many separate sessions this climb turns up in — the repeat count.
     var sessionCount: Int {

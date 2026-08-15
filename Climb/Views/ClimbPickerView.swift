@@ -46,16 +46,19 @@ struct ClimbPickerView: View {
                     Button(action: create) {
                         HStack(spacing: 10) {
                             Image(systemName: "plus")
-                                .font(.body.weight(.semibold))
-                            Text("New climb — \(trimmedQuery)")
+                            Text("Create new climb \"\(trimmedQuery)\"")
                                 .fontWeight(.medium)
                             Spacer()
                         }
                         .contentShape(.rect)
                         .padding(.vertical, 6)
+                        // Line the plus up under the search field's magnifying glass
+                        // (16 outer + 14 capsule padding).
+                        .padding(.leading, 30)
                     }
                     .buttonStyle(.plain)
                     .plainRow()
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 16))
                 }
             }
             .listStyle(.plain)
@@ -74,7 +77,11 @@ struct ClimbPickerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
                 }
             }
         }
@@ -112,19 +119,14 @@ struct ClimbPickerView: View {
 
     private func row(for climb: Climb) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(climb.name)
-                    .font(.body.weight(.medium))
-                Text(climb.summary)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            Text(climb.name)
+                .font(.body.weight(.medium))
             Spacer()
-            if let last = climb.lastAttemptAt {
-                Text(last.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+            Text(climb.attempts.isEmpty
+                 ? "No attempts"
+                 : "\(climb.attempts.count) attempt\(climb.attempts.count == 1 ? "" : "s")")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
         .contentShape(.rect)
         .padding(.vertical, 4)

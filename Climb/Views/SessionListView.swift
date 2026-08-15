@@ -49,6 +49,7 @@ struct SessionListView: View {
                     Button(action: createSession) {
                         Label("New Session", systemImage: "square.and.pencil")
                     }
+                    .dampedToolbarMorph()
                 }
             }
             .navigationDestination(item: $newSession) { session in

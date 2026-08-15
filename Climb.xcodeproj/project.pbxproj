@@ -14,11 +14,19 @@
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
+/* Begin PBXBuildFile section */
+		CB0000000000000000000010 /* OpenCV in Frameworks */ = {
+			isa = PBXBuildFile;
+			productRef = CB0000000000000000000012 /* OpenCV */;
+		};
+/* End PBXBuildFile section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		CB0000000000000000000007 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CB0000000000000000000010 /* OpenCV in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,6 +78,9 @@
 				CB000000000000000000000F /* Climb */,
 			);
 			name = Climb;
+			packageProductDependencies = (
+				CB0000000000000000000012 /* OpenCV */,
+			);
 			productName = Climb;
 			productReference = CB0000000000000000000005 /* Climb.app */;
 			productType = "com.apple.product-type.application";
@@ -98,6 +109,9 @@
 			);
 			mainGroup = CB0000000000000000000002;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				CB0000000000000000000011 /* XCRemoteSwiftPackageReference "opencv-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CB0000000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -215,6 +229,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.andrewchang.Crux;
 				PRODUCT_NAME = Crux;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Climb/Support/Climb-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -246,6 +261,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.andrewchang.Crux;
 				PRODUCT_NAME = Crux;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Climb/Support/Climb-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -272,6 +288,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		CB0000000000000000000011 /* XCRemoteSwiftPackageReference "opencv-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/yeatse/opencv-spm.git";
+			requirement = {
+				kind = exactVersion;
+				version = 4.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CB0000000000000000000012 /* OpenCV */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CB0000000000000000000011 /* XCRemoteSwiftPackageReference "opencv-spm" */;
+			productName = OpenCV;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = CB0000000000000000000001 /* Project object */;
 }

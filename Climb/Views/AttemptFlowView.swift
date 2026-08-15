@@ -15,6 +15,8 @@ struct CapturedAttempt {
 struct AttemptFlowView: View {
     let attemptID: UUID
     let ordinal: Int
+    /// The climb the attempt will belong to; nil when it lands outside any climb.
+    var climbName: String? = nil
     var onFinish: (CapturedAttempt) -> Void
     var onCancel: () -> Void
 
@@ -38,6 +40,7 @@ struct AttemptFlowView: View {
             case let .review(video, thumbnail, depth, duration, restStart):
                 AttemptReviewView(
                     ordinal: ordinal,
+                    climbName: climbName,
                     videoFilename: video,
                     thumbnailFilename: thumbnail,
                     depthFilename: depth,
@@ -49,6 +52,10 @@ struct AttemptFlowView: View {
             }
         }
         .animation(.smooth(duration: 0.3), value: phase)
+        // Swiping the sheet away is fine while nothing is on the line — the idle
+        // camera. Mid-recording, processing, or on review it would silently trash
+        // the take, so there the ✕ (which confirms) is the only way out.
+        .interactiveDismissDisabled(!(phase == .capture && capture.status != .recording))
         .task {
             capture.onFinish = { url, depthURL, stoppedAt in
                 ingest(url: url, depthURL: depthURL, stoppedAt: stoppedAt)
@@ -86,13 +93,13 @@ struct AttemptFlowView: View {
                     .padding(.bottom, 32)
             }
         }
-        .statusBarHidden()
     }
 
     private var captureTopBar: some View {
-        // Matches the system's glass nav-bar buttons, so closing here feels the same size
-        // as backing out of a session.
-        let controlHeight: CGFloat = 44
+        // Same bones as AttemptTopBar — ✕ disc, centred capsule — so the capture page
+        // is headed exactly like the review and replay pages. The capsule swaps to the
+        // red clock while recording.
+        let controlHeight: CGFloat = 48
 
         return GlassEffectContainer(spacing: 12) {
             HStack {
@@ -111,12 +118,26 @@ struct AttemptFlowView: View {
 
                 Spacer()
 
-                Text(capture.status == .recording ? capture.elapsed.clockString : "Attempt \(ordinal)")
-                    .font(.system(size: 17, weight: .semibold).monospacedDigit())
-                    .padding(.horizontal, 18)
-                    .frame(height: controlHeight)
-                    .glassEffect(.regular.tint(capture.status == .recording ? .red.opacity(0.7) : nil),
-                                 in: .capsule)
+                Group {
+                    if capture.status == .recording {
+                        Text(capture.elapsed.clockString)
+                            .font(.system(size: 17, weight: .semibold).monospacedDigit())
+                    } else {
+                        VStack(spacing: 1) {
+                            Text(climbName ?? "Attempt \(ordinal)")
+                                .font(.system(size: 17, weight: .semibold))
+                            if climbName != nil {
+                                Text("Attempt \(ordinal)")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .frame(height: controlHeight)
+                .glassEffect(.regular.tint(capture.status == .recording ? .red.opacity(0.7) : nil),
+                             in: .capsule)
 
                 Spacer()
 
@@ -128,9 +149,8 @@ struct AttemptFlowView: View {
         .padding(.top, 8)
     }
 
-    /// The Camera app's shutter: a glass ring hugging a red disc that collapses into a
-    /// rounded square while recording. The ring is a full glass circle masked down to its
-    /// rim, so the centre stays clear once the disc shrinks.
+    /// The Camera app's shutter: a full liquid-glass disc with a red disc on top that
+    /// collapses into a rounded square while recording.
     private var recordButton: some View {
         let recording = capture.status == .recording
         let inner: CGFloat = recording ? 32 : 66
@@ -147,11 +167,6 @@ struct AttemptFlowView: View {
                 Color.clear
                     .frame(width: 76, height: 76)
                     .glassEffect(.regular.tint(.white.opacity(0.25)), in: .circle)
-                    .mask {
-                        Circle()
-                            .strokeBorder(.black, lineWidth: 5)
-                            .frame(width: 76, height: 76)
-                    }
                 RoundedRectangle(cornerRadius: recording ? 8 : inner / 2, style: .continuous)
                     .fill(Color(red: 1, green: 0.23, blue: 0.19))
                     .frame(width: inner, height: inner)
@@ -249,9 +264,11 @@ private struct ShutterButtonStyle: ButtonStyle {
     }
 }
 
-/// Review the video while the rest clock runs, jot what happened, finish.
+/// The same attempt screen as the replay page, plus a Finish button. The rest clock
+/// still runs from `restStart` — it's recorded on finish, just not shown for now.
 private struct AttemptReviewView: View {
     let ordinal: Int
+    let climbName: String?
     let videoFilename: String
     let thumbnailFilename: String?
     let depthFilename: String?
@@ -260,105 +277,60 @@ private struct AttemptReviewView: View {
     var onFinish: (CapturedAttempt) -> Void
     var onDiscard: () -> Void
 
-    @State private var player = AVPlayer()
     @State private var notes: String = ""
-    @FocusState private var notesFocused: Bool
+    @State private var isConfirmingDiscard = false
+    @State private var controller = AttemptPlayerController()
 
     private var videoURL: URL { VideoStore.directory.appendingPathComponent(videoFilename) }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    VideoPlayer(player: player)
-                        .aspectRatio(9 / 16, contentMode: .fit)
-                        .frame(maxHeight: 380)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                    restTimer
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Notes")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("Fell at the crux, left foot slipped…",
-                                  text: $notes, axis: .vertical)
-                            .lineLimit(3...8)
-                            .focused($notesFocused)
-                            .padding(14)
-                            .background(Color.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 100)
+        AttemptPlayerView(
+            videoURL: videoURL,
+            duration: duration,
+            notes: $notes,
+            autoplays: true,
+            controller: controller
+        ) {
+            Button {
+                controller.commitDraft()
+                onFinish(CapturedAttempt(
+                    videoFilename: videoFilename,
+                    thumbnailFilename: thumbnailFilename,
+                    depthFilename: depthFilename,
+                    duration: duration,
+                    restSeconds: Date().timeIntervalSince(restStart),
+                    notes: notes
+                ))
+            } label: {
+                Text("Finish Attempt")
+                    .font(.headline)
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
             }
-            .scrollDismissesKeyboard(.interactively)
-            .background(Color.black)
-            .navigationTitle("Attempt \(ordinal)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Discard", role: .destructive) {
-                        try? FileManager.default.removeItem(at: videoURL)
-                        if let depthFilename {
-                            try? FileManager.default.removeItem(
-                                at: VideoStore.directory.appendingPathComponent(depthFilename))
-                        }
-                        onDiscard()
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    onFinish(CapturedAttempt(
-                        videoFilename: videoFilename,
-                        thumbnailFilename: thumbnailFilename,
-                        depthFilename: depthFilename,
-                        duration: duration,
-                        restSeconds: Date().timeIntervalSince(restStart),
-                        notes: notes
-                    ))
-                } label: {
-                    Text("Finish Attempt")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                }
-                .buttonStyle(.glassProminent)
-                .tint(.white)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
-            }
+            .buttonStyle(.glassProminent)
+            .tint(.white)
         }
-        .task {
-            player.replaceCurrentItem(with: AVPlayerItem(url: videoURL))
-            player.play()
+        .overlay(alignment: .top) {
+            AttemptTopBar(
+                title: climbName ?? "Attempt \(ordinal)",
+                subtitle: climbName != nil ? "Attempt \(ordinal)" : nil
+            ) { isConfirmingDiscard = true }
         }
-    }
-
-    /// Starts counting the instant recording stopped and keeps running while you review.
-    private var restTimer: some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 12) {
-                Image(systemName: "timer")
-                    .font(.system(size: 20, weight: .medium))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Resting")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(timerInterval: restStart...Date.distantFuture, countsDown: false)
-                        .font(.system(size: 30, weight: .semibold).monospacedDigit())
+        // Closing the review is discarding the take — the recording only becomes
+        // an attempt through "Finish Attempt" — so the ✕ double-checks.
+        .alert("Delete this attempt?", isPresented: $isConfirmingDiscard) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                try? FileManager.default.removeItem(at: videoURL)
+                if let depthFilename {
+                    try? FileManager.default.removeItem(
+                        at: VideoStore.directory.appendingPathComponent(depthFilename))
                 }
-                Spacer()
-                Text("\(duration.clockString) recorded")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                onDiscard()
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
+        } message: {
+            Text("The video will be deleted.")
         }
     }
 }

@@ -96,8 +96,13 @@ final class AttemptRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func buildHierarchy() {
-        // Flat on black: the thumbnail gives the row its shape, so no card is needed.
-        container.backgroundColor = .clear
+        // The row reads as one bubble: a near-black card holding the title on the
+        // left and the video on the right, the video tucked inside the bubble's
+        // edges like a thumbnail in a list cell.
+        // A shade past systemGray6: barely off black, just enough to read as a card.
+        container.backgroundColor = UIColor(white: 0.07, alpha: 1)
+        container.layer.cornerRadius = 14
+        container.layer.cornerCurve = .continuous
         container.translatesAutoresizingMaskIntoConstraints = false
         addSubview(container)
 
@@ -134,34 +139,25 @@ final class AttemptRowView: UIView {
             container.topAnchor.constraint(equalTo: topAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            thumbnailView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            thumbnailView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
             thumbnailView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            thumbnailView.widthAnchor.constraint(equalToConstant: 60),
-            thumbnailView.heightAnchor.constraint(equalToConstant: 60),
+            thumbnailView.widthAnchor.constraint(equalToConstant: 48),
+            thumbnailView.heightAnchor.constraint(equalToConstant: 48),
 
             playGlyph.centerXAnchor.constraint(equalTo: thumbnailView.centerXAnchor),
             playGlyph.centerYAnchor.constraint(equalTo: thumbnailView.centerYAnchor),
 
-            titleLabel.leadingAnchor.constraint(equalTo: thumbnailView.trailingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            titleLabel.topAnchor.constraint(equalTo: thumbnailView.topAnchor, constant: 8),
+            titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 11),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor, constant: -12),
+            // Title sits just above center so the pair of labels reads as one centered block.
+            titleLabel.bottomAnchor.constraint(equalTo: container.centerYAnchor, constant: 2),
 
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor, constant: -12),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
         ])
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
-    }
-
-    /// Only the thumbnail and its labels take touches. The empty space beside them falls
-    /// through to the text view, so tapping to the right of a row puts the caret on that
-    /// line instead of opening the attempt.
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let content = thumbnailView.frame.union(titleLabel.frame).union(detailLabel.frame)
-        let tappable = container.convert(content, to: self).insetBy(dx: -8, dy: -2)
-        guard tappable.contains(point) else { return nil }
-        return super.hitTest(point, with: event)
     }
 
     @objc private func handleTap() {
@@ -169,13 +165,11 @@ final class AttemptRowView: UIView {
     }
 
     func configure(with snapshot: AttemptSnapshot) {
+        // Name plus the video's length — the notes are the quote on the line below,
+        // in the document itself.
         titleLabel.text = "Attempt \(snapshot.ordinal)"
+        detailLabel.text = "\(snapshot.duration.clockString) video"
         thumbnailView.image = snapshot.thumbnail
         playGlyph.isHidden = snapshot.thumbnail == nil
-
-        // No notes here: they are the quote on the line below, in the document itself.
-        var parts = ["\(snapshot.duration.clockString) video"]
-        if snapshot.rest > 0 { parts.append("rested \(snapshot.rest.clockString)") }
-        detailLabel.text = parts.joined(separator: " · ")
     }
 }

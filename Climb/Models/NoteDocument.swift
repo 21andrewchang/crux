@@ -21,25 +21,94 @@ enum NoteDocument {
     /// line under a row is adopted as its notes — and nothing takes one away.
     static let noteQuote = NSAttributedString.Key("climbNoteQuote")
 
-    /// Body text in every way but colour and a step of indent — the notes sit in the
-    /// note like anything else you typed, just quieter and tucked under their row.
+    /// Lines up with the text inside a climb tag and an attempt bubble's title, so
+    /// clocks, notes and body text all hang from the same left edge as the names.
+    static let textIndent: CGFloat = 11
+
+    /// Body text in every way but colour — the notes sit in the note like anything
+    /// else you typed, just quieter, tucked under their row.
     static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         // A step more than body text, so the quote reads as a block that ends before
         // whatever comes next rather than running into it.
         paragraph.paragraphSpacing = 8
-        paragraph.firstLineHeadIndent = quoteIndent
-        paragraph.headIndent = quoteIndent
+        paragraph.firstLineHeadIndent = textIndent
+        paragraph.headIndent = textIndent
+        paragraph.tailIndent = -textIndent
 
         var attributes = bodyAttributes
-        attributes[.foregroundColor] = UIColor.secondaryLabel
+        // The words read at full strength; the quote's quietness lives in the bar,
+        // the indent, and the greyed clock instead.
+        attributes[.foregroundColor] = UIColor.label
         attributes[.paragraphStyle] = paragraph
         attributes[noteQuote] = id
         return attributes
     }
 
-    static let quoteIndent: CGFloat = 16
+    /// The clock a note line opens with, as seconds — carried on the token's own
+    /// characters so a tap can read the moment straight off the text under it.
+    static let noteTimestamp = NSAttributedString.Key("climbNoteTimestamp")
+
+    /// The clock steps back to grey — the note's words carry the line; the bookmark
+    /// beside it is what marks the link.
+    static func timestampAttributes(seconds: TimeInterval) -> [NSAttributedString.Key: Any] {
+        [
+            .font: UIFont.preferredFont(forTextStyle: .body),
+            .foregroundColor: UIColor.secondaryLabel,
+            noteTimestamp: seconds,
+        ]
+    }
+
+    /// Room for the bookmark drawn in the gutter before the clock.
+    static let bookmarkGutter: CGFloat = 22
+
+    /// Trailing room held open on a stamped line for the clock drawn at its right edge.
+    static let clockReserve: CGFloat = 52
+
+    /// A stamped line sits one gutter past the text indent, leaving the bookmark its
+    /// lane before the words — and stops short on the right, where the clock lives.
+    private static let stampedParagraph: NSParagraphStyle = {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = 8
+        paragraph.firstLineHeadIndent = textIndent + bookmarkGutter
+        paragraph.headIndent = textIndent + bookmarkGutter
+        paragraph.tailIndent = -(textIndent + clockReserve)
+        return paragraph
+    }()
+
+    /// Walks a quote's lines: one opening with a clock gets the token tinted and
+    /// tagged with its seconds — what makes it tappable.
+    private static func styleQuoteLines(in storage: NSMutableAttributedString, range: NSRange, id: UUID) {
+        let text = storage.string as NSString
+        var location = range.location
+        while location < NSMaxRange(range) {
+            let line = text.lineRange(for: NSRange(location: location, length: 0))
+            let lineInQuote = NSIntersectionRange(line, range)
+            defer { location = NSMaxRange(line) }
+            guard lineInQuote.length > 0 else { continue }
+
+            if let match = NoteTimestamp.regex.firstMatch(in: storage.string, options: [], range: lineInQuote),
+               match.range.location == lineInQuote.location {
+                let seconds = NoteTimestamp.seconds(from: text.substring(with: match.range))
+                storage.addAttributes(timestampAttributes(seconds: seconds), range: match.range)
+                storage.addAttributes([.paragraphStyle: stampedParagraph], range: lineInQuote)
+                // The token stays in the text — it is the note's identity and what
+                // makes the seek frame-exact — but takes no space in the line: the
+                // clock the reader sees is drawn at the line's trailing edge by the
+                // layout fragment. The space after the token hides with it, so the
+                // words sit flush against the bookmark's gutter.
+                var hidden = match.range
+                if NSMaxRange(hidden) < NSMaxRange(line),
+                   text.character(at: NSMaxRange(hidden)) == 0x0020 {
+                    hidden.length += 1
+                }
+                storage.addAttributes([.font: UIFont.systemFont(ofSize: 0.1),
+                                       .foregroundColor: UIColor.clear], range: hidden)
+            }
+        }
+    }
 
     // MARK: Typography
     //
@@ -51,7 +120,7 @@ enum NoteDocument {
         let paragraph = NSMutableParagraphStyle()
         paragraph.paragraphSpacing = 6
         return [
-            .font: UIFont.systemFont(ofSize: 28, weight: .bold),
+            .font: UIFont.systemFont(ofSize: 34, weight: .bold),
             .foregroundColor: UIColor.label,
             .paragraphStyle: paragraph,
         ]
@@ -61,6 +130,11 @@ enum NoteDocument {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         paragraph.paragraphSpacing = 2
+        paragraph.firstLineHeadIndent = textIndent
+        paragraph.headIndent = textIndent
+        // Negative means "in from the trailing edge": the same breathing room on
+        // both sides, where a bare head indent would read as left-heavy.
+        paragraph.tailIndent = -textIndent
         return [
             .font: UIFont.preferredFont(forTextStyle: .body),
             .foregroundColor: UIColor.label,
@@ -144,10 +218,10 @@ enum NoteDocument {
                 storage.replaceCharacters(in: NSRange(location: insertAt, length: 0),
                                           with: NSAttributedString(string: inserted,
                                                                    attributes: quoteAttributes(for: marker.id)))
-            } else if let quote {
-                // Nothing written yet: hold the empty line open so it can be typed into.
-                storage.addAttribute(noteQuote, value: marker.id, range: quote)
             }
+            // Nothing written and nothing under the row: no binding, no quote. The
+            // empty line stays plain, and typing there is adopted as the attempt's
+            // notes by `applyStyles` on the first keystroke.
         }
     }
 
@@ -233,7 +307,16 @@ enum NoteDocument {
                   let region = regions[id],
                   NSIntersectionRange(range, region) == range
             else { return }
-            quotes.append((range, id))
+            // Text typed into a quote can arrive without the binding — UIKit rebuilds
+            // typingAttributes around a tap and custom keys don't survive — leaving
+            // unbound gaps inside the quote's lines. The quote is line-shaped, so a
+            // run grows back to the start of its own line, absorbing any gap before
+            // it; a gap later in the line is absorbed by the run that owns the
+            // line's break growing back over it.
+            let lineStart = text.lineRange(for: NSRange(location: range.location, length: 0)).location
+            let grown = NSIntersectionRange(NSRange(location: lineStart,
+                                                    length: NSMaxRange(range) - lineStart), region)
+            quotes.append((grown.length > 0 ? grown : range, id))
         }
 
         // A bare line under a row is adopted as its notes, so notes typed after the fact
@@ -246,10 +329,39 @@ enum NoteDocument {
             quotes.append((line, id))
         }
 
+        // A note line is a written line under its row, or a line opening with a
+        // clock — nothing else, now that a break can never be typed into a quote.
+        // A binding on any other line leaked there — carried past the quote's edge
+        // by the system's typing attributes, or left behind by an edit at its
+        // boundary — and is dropped here. A quote can never grow a line the user
+        // didn't record, and a row with nothing written under it shows no quote
+        // at all.
+        quotes = quotes.flatMap { quote -> [(range: NSRange, id: UUID)] in
+            var lines: [(range: NSRange, id: UUID)] = []
+            var location = quote.range.location
+            while location < NSMaxRange(quote.range) {
+                let line = text.lineRange(for: NSRange(location: location, length: 0))
+                defer { location = NSMaxRange(line) }
+                let inQuote = NSIntersectionRange(line, quote.range)
+                guard inQuote.length > 0 else { continue }
+                let written = !text.substring(with: line)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let opensRegion = regions[quote.id]?.location == line.location
+                let clock = NoteTimestamp.regex.firstMatch(in: storage.string, options: [], range: line)
+                if (opensRegion && written) || clock?.range.location == line.location {
+                    lines.append((inQuote, quote.id))
+                }
+            }
+            return lines
+        }
+
         // `addAttributes`, not `setAttributes`: the latter would strip `.attachment`
         // and silently turn every inline attempt row back into a bare placeholder.
         storage.beginEditing()
         storage.removeAttribute(noteQuote, range: full)
+        // Re-derived below from what the text now says, so an edited token never
+        // keeps a stale time or a stale tint.
+        storage.removeAttribute(noteTimestamp, range: full)
         storage.addAttributes(bodyAttributes, range: full)
         let firstLine = text.lineRange(for: NSRange(location: 0, length: 0))
         storage.addAttributes(titleAttributes, range: firstLine)
@@ -259,16 +371,35 @@ enum NoteDocument {
         for quote in quotes {
             storage.addAttributes(quoteAttributes(for: quote.id), range: quote.range)
         }
+        for quote in quotes {
+            styleQuoteLines(in: storage, range: quote.range, id: quote.id)
+        }
         storage.endEditing()
     }
 
     /// What each attempt's notes currently read as in the document.
+    ///
+    /// Collected line by line, not by raw run: a run can have unbound gaps — the
+    /// binding is a custom key and does not survive every edit — and joining raw runs
+    /// would weld two note lines together without the break between them.
     static func notes(in storage: NSAttributedString) -> [UUID: String] {
-        var runs: [UUID: String] = [:]
+        let text = storage.string as NSString
+        var lines: [UUID: [NSRange]] = [:]
         storage.enumerateAttribute(noteQuote, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard let id = value as? UUID else { return }
-            runs[id, default: ""] += storage.attributedSubstring(from: range).string
+            var location = range.location
+            while location < NSMaxRange(range) {
+                let line = text.lineRange(for: NSRange(location: location, length: 0))
+                if lines[id]?.last != line {
+                    lines[id, default: []].append(line)
+                }
+                location = NSMaxRange(line)
+            }
         }
-        return runs.mapValues { $0.trimmingCharacters(in: .newlines) }
+        return lines.mapValues { ranges in
+            ranges.map { text.substring(with: $0).trimmingCharacters(in: .newlines) }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .newlines)
+        }
     }
 }
