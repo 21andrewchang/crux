@@ -14,13 +14,18 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
     /// A climb heading folds like a section: chevron at the trailing edge, group
     /// hidden under it while folded.
     var isFolded = false
+    /// How far through its quarter turn the fold chevron is — 0 open, 1 folded. Set
+    /// from `FoldAnimator` when the fragment is vended.
+    var foldProgress: CGFloat = 0
     var containerWidth: CGFloat = 0
     /// Attempts recorded under this heading in the note — drawn plain at the line's
     /// trailing edge, "0 attempts" included, so a fresh bubble reads as one too.
     var attemptCount = 0
 
-    /// How far the pill swells past the text on each side.
-    private static let inflate: CGFloat = 5
+    /// How far the pill swells past the text on each side. Read by the editor too:
+    /// the bubble draws lower than its line does, so anything measured under the line
+    /// has to clear the pill rather than the text.
+    static let inflate: CGFloat = 5
 
     private static let countAttributes: [NSAttributedString.Key: Any] = [
         .font: UIFont.systemFont(ofSize: 13),
@@ -41,14 +46,20 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
                       width: size.width, height: size.height)
     }
 
+    /// The example name an empty bubble shows — see `HeadingPlaceholder`.
+    private var example: String { name.isEmpty ? NoteDocument.climbPlaceholder : "" }
+
+    private var placeholderRect: CGRect {
+        HeadingPlaceholder.rect(example, font: NoteDocument.headerFont, in: self)
+    }
+
     private var pillRect: CGRect {
         guard let line = textLineFragments.first else { return .null }
         let bounds = line.typographicBounds
-        // An empty bubble — just dropped, nothing typed — still shows a caret's worth
-        // of room to type into.
-        let textWidth = name.isEmpty
-            ? 22
-            : ceil((name as NSString).size(withAttributes: [.font: NoteDocument.headerFont]).width)
+        // An empty bubble is sized to the example name it is showing, so the pill
+        // doesn't jump as the first characters land in it.
+        let textWidth = HeadingPlaceholder.width(of: name.isEmpty ? example : name,
+                                                 font: NoteDocument.headerFont)
         return CGRect(x: -layoutFragmentFrame.minX,
                       y: bounds.minY - Self.inflate,
                       width: textWidth + NoteDocument.textIndent * 2,
@@ -56,12 +67,13 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
     }
 
     override var renderingSurfaceBounds: CGRect {
-        let icon = HeadingChevron.icon(folded: isFolded)
+        let icon = HeadingChevron.icon()
         let chevron = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         return super.renderingSurfaceBounds
             .union(pillRect)
             .union(chevron)
             .union(countRect(before: chevron))
+            .union(placeholderRect)
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
@@ -75,12 +87,17 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
             tint.withAlphaComponent(0.22).setFill()
             path.fill()
         }
-        let icon = HeadingChevron.icon(folded: isFolded)
+        let icon = HeadingChevron.icon()
         let iconRect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
-        icon.draw(at: CGPoint(x: point.x + iconRect.minX, y: point.y + iconRect.minY))
+        HeadingChevron.draw(icon, in: iconRect, progress: foldProgress, at: point, in: context)
         let count = countRect(before: iconRect)
         countText.draw(at: CGPoint(x: point.x + count.minX, y: point.y + count.minY),
                        withAttributes: Self.countAttributes)
+        // The name's own colour, faded — the example has to stay readable on the fill
+        // it sits on, which `placeholderText` is too thin to manage inside the pill.
+        HeadingPlaceholder.draw(example, font: NoteDocument.headerFont,
+                                color: tint.withAlphaComponent(0.5),
+                                in: placeholderRect, at: point)
         UIGraphicsPopContext()
         super.draw(at: point, in: context)
     }

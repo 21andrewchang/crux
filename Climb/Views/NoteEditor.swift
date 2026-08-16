@@ -82,6 +82,9 @@ struct NoteEditor: UIViewRepresentable {
     /// Shared with the system bottom bar's stopwatch item, so the clock agrees
     /// wherever the bar happens to be.
     var stopwatch: StopwatchModel
+    /// Where the tutorial's walkthrough has got to — which hint the note shows and
+    /// which buttons either bar is allowed to draw. `.done` for every other note.
+    var guide: TutorialGuide
     /// Times the swap between the parked system bar and the keyboard clone; the
     /// editor hands it the accessory view so it can track where the clone is.
     var barPark: BarParkModel
@@ -131,6 +134,9 @@ struct NoteEditor: UIViewRepresentable {
         textView.addGestureRecognizer(timestampTap)
 
         context.coordinator.textView = textView
+        textView.onResize = { [weak coordinator = context.coordinator] in
+            coordinator?.placeHint()
+        }
         context.coordinator.attachAccessoryView(to: textView)
         context.coordinator.attachDateLine(to: textView, date: session.createdAt)
         context.coordinator.attachPlaceholder(to: textView)
@@ -155,7 +161,18 @@ struct NoteEditor: UIViewRepresentable {
         weak var textView: UITextView?
         private var accessoryHost: UIHostingController<EditingToolbar>?
         private weak var placeholderLabel: UILabel?
+        private weak var hintLabel: UILabel?
+        private var hintTop: NSLayoutConstraint?
+        /// Moved with `hintTop` while the walkthrough is running, so its line hangs
+        /// from the caret's margin — which steps in under a heading — rather than the
+        /// page's.
+        private var hintLeading: NSLayoutConstraint?
         private var isRestyling = false
+        /// Turns the fold chevrons over the frames after a fold lands.
+        private let foldAnimator = FoldAnimator()
+        /// The tap of a heading folding shut or opening — kept around so it can be
+        /// warmed up the moment the touch lands on the chevron.
+        private let foldHaptic = UIImpactFeedbackGenerator(style: .light)
         /// An edit held back pending confirmation, as `(range, replacement)`.
         private var pendingDeletion: (range: NSRange, replacement: String)?
 
@@ -219,9 +236,33 @@ struct NoteEditor: UIViewRepresentable {
                 textView.typingAttributes = NoteDocument.headerAttributes(tint: headingTint(of: line))
             } else if sectionLine(onLineAt: textView.selectedRange.location) != nil {
                 textView.typingAttributes = NoteDocument.sectionHeaderAttributes
+            } else if isGrouped(at: textView.selectedRange.location) {
+                textView.typingAttributes = NoteDocument.groupedBodyAttributes
             } else {
                 textView.typingAttributes = NoteDocument.bodyAttributes
             }
+        }
+
+        /// Whether the line at `location` is inside a group — anywhere below a climb or
+        /// section heading, where body text indents to line up under it. The caret has
+        /// to know before the character lands: the restyle would move the line a moment
+        /// later, and the cursor would jump out from under what was just typed.
+        private func isGrouped(at location: Int) -> Bool {
+            guard let storage = textView?.textStorage, storage.length > 0 else { return false }
+            let line = (storage.string as NSString)
+                .lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+            guard line.location > 0 else { return false }
+            let above = NSRange(location: 0, length: line.location)
+            var found = false
+            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] where !found {
+                storage.enumerateAttribute(key, in: above) { value, _, stop in
+                    if value != nil {
+                        found = true
+                        stop.pointee = true
+                    }
+                }
+            }
+            return found
         }
 
         /// The line at `location`, if any of its characters carry `key`. Line-shaped
@@ -252,8 +293,7 @@ struct NoteEditor: UIViewRepresentable {
 
         private func headingTint(of line: NSRange) -> UIColor {
             guard let storage = textView?.textStorage else { return ClimbTint.fallback }
-            let name = (storage.string as NSString).substring(with: line)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             return ClimbTint.color(for: name)
         }
 
@@ -335,27 +375,341 @@ struct NoteEditor: UIViewRepresentable {
 
         /// A label rather than placeholder text in the storage: real text would be
         /// serialized into `bodyText` and become the session's title.
+        ///
+        /// Two of them — the title's, and the hints that sit under it. The title's is
+        /// gone the moment anything at all is in the document; the hints stay until
+        /// something is written *under* the title, so a named-but-empty note still
+        /// says what its buttons do.
         func attachPlaceholder(to textView: UITextView) {
-            let label = UILabel()
-            label.numberOfLines = 0
-            label.attributedText = NoteDocument.placeholderText
-            label.isUserInteractionEnabled = false
-            label.translatesAutoresizingMaskIntoConstraints = false
-            textView.addSubview(label)
+            let inset = textView.textContainerInset
+
+            func add(_ text: NSAttributedString) -> (label: UILabel, leading: NSLayoutConstraint) {
+                let label = UILabel()
+                label.numberOfLines = 0
+                label.attributedText = text
+                label.isUserInteractionEnabled = false
+                label.translatesAutoresizingMaskIntoConstraints = false
+                textView.addSubview(label)
+                let leading = label.leadingAnchor.constraint(
+                    equalTo: textView.frameLayoutGuide.leadingAnchor, constant: inset.left)
+                NSLayoutConstraint.activate([
+                    leading,
+                    label.trailingAnchor.constraint(equalTo: textView.frameLayoutGuide.trailingAnchor,
+                                                    constant: -inset.right),
+                ])
+                return (label, leading)
+            }
 
             // Pinned to the content, where the text will start: the view now rests
             // with a safe-area content inset, so the frame's top is under the bars.
-            let inset = textView.textContainerInset
-            NSLayoutConstraint.activate([
-                label.topAnchor.constraint(equalTo: textView.contentLayoutGuide.topAnchor, constant: inset.top),
-                label.leadingAnchor.constraint(equalTo: textView.frameLayoutGuide.leadingAnchor, constant: inset.left),
-                label.trailingAnchor.constraint(equalTo: textView.frameLayoutGuide.trailingAnchor, constant: -inset.right),
-            ])
-            placeholderLabel = label
+            let title = add(NoteDocument.placeholderText).label
+            title.topAnchor.constraint(equalTo: textView.contentLayoutGuide.topAnchor,
+                                       constant: inset.top).isActive = true
+            placeholderLabel = title
+
+            // The hints hang off the title line, whose height is measured from the
+            // title alone — so they follow a title that wraps, and nothing else moves
+            // them: lines one through three of the body, always. The walkthrough moves
+            // both of these constants instead, to sit on the caret's own line.
+            let hints = add(NoteDocument.hintText)
+            let top = hints.label.topAnchor.constraint(equalTo: textView.contentLayoutGuide.topAnchor)
+            top.isActive = true
+            hintLabel = hints.label
+            hintTop = top
+            hintLeading = hints.leading
         }
 
         private func updatePlaceholder() {
-            placeholderLabel?.isHidden = (textView?.textStorage.length ?? 0) > 0
+            guard let textView else { return }
+            placeholderLabel?.isHidden = textView.textStorage.length > 0
+
+            updateGuide()
+            guard !parent.guide.isRunning else {
+                // The walkthrough asks for one thing at a time, and it asks in the
+                // place that thing would go: the line under everything written so
+                // far, exactly where the cursor would land on it.
+                let asked = Asked(step: parent.guide.step, needsName: parent.guide.needsName)
+                if shownStep != asked {
+                    shownStep = asked
+                    hintLabel?.attributedText = hintText(for: asked)
+                }
+                hintLabel?.isHidden = false
+                placeHint()
+                return
+            }
+            if shownStep != nil {
+                shownStep = nil
+                hintLabel?.attributedText = NoteDocument.hintText
+                hintLeading?.constant = textView.textContainerInset.left
+            }
+            hintLabel?.isHidden = !isUnwritten
+            hintTop?.constant = textView.textContainerInset.top + titleLineHeight
+        }
+
+        /// Puts the walkthrough's line where the note's next line would be. Split from
+        /// `updatePlaceholder` so a resize can place it again without re-reading the
+        /// document — and because the first placement happens before the view has a
+        /// size, when there is nothing yet to measure against.
+        func placeHint() {
+            guard parent.guide.isRunning else { return }
+            let origin = hintOrigin
+            hintTop?.constant = origin.y
+            hintLeading?.constant = origin.x
+        }
+
+        /// Where the walkthrough's line goes: the line under everything written so far,
+        /// at the exact spot the cursor would land on it — a step in when that line is
+        /// inside a section or a climb, at the page's margin when it is not.
+        ///
+        /// Fixed to what the note says, never to the caret: pressing return under the
+        /// instruction can't walk it down the page, and moving the caret away doesn't
+        /// take it with you.
+        private var hintOrigin: CGPoint {
+            guard let textView else { return .zero }
+            let inset = textView.textContainerInset
+            let storage = textView.textStorage
+            let text = storage.string as NSString
+            let titleLine = storage.length > 0
+                ? text.lineRange(for: NSRange(location: 0, length: 0))
+                : NSRange(location: 0, length: 0)
+            let caretLine = storage.length > 0
+                ? text.lineRange(for: NSRange(location: min(textView.selectedRange.location,
+                                                            storage.length), length: 0))
+                : NSRange(location: 0, length: 0)
+
+            // The line under the last thing written — or under the caret, if the caret
+            // has gone below that. The instruction is never the line the caret is on:
+            // opening a line steps it down and the instruction moves with it, so what
+            // gets typed there always lands above the instruction, never over it.
+            var target = lastContentLine ?? titleLine
+            if caretLine.location > target.location { target = caretLine }
+
+            // Nothing under the title yet — an empty note included, where the first
+            // instruction is the title's own. Measured off the title the way the note's
+            // own hints are, and never off the layout: an empty line under the title
+            // takes its font from whatever the caret is currently typing in, so its
+            // laid-out top moves as the caret crosses into it. The title's text and the
+            // width it wraps in are the only things that can move this.
+            guard target.location > titleLine.location else {
+                return CGPoint(x: inset.left, y: inset.top + titleLineHeight)
+            }
+
+            // Under the target: the bottom of the target's own laid-out line, plus the
+            // trailing spacing its paragraph puts between itself and whatever comes
+            // next — which is where the next line of text starts. An opened line at the
+            // very end of the note has no characters to measure, so there the caret
+            // standing on it is the measure.
+            let bottom: CGFloat
+            if target.length == 0 {
+                // The caret's own line box gives the top; the rest is what one line of
+                // what would be typed there takes up. Measured rather than read off the
+                // caret's height: the caret is as tall as its font and no taller, while
+                // a line of text also carries its line and paragraph spacing — which is
+                // the few points the instruction used to jump by on the first keystroke.
+                let rect = textView.caretRect(for: textView.selectedTextRange?.start
+                                              ?? textView.endOfDocument)
+                let typing = textView.typingAttributes
+                let font = typing[.font] as? UIFont ?? .preferredFont(forTextStyle: .body)
+                let style = typing[.paragraphStyle] as? NSParagraphStyle
+                let line = font.lineHeight + (style?.lineSpacing ?? 0) + (style?.paragraphSpacing ?? 0)
+                bottom = rect.minY.isFinite ? rect.minY - inset.top + line : titleLineHeight
+            } else {
+                bottom = nextLineTop(after: target) ?? titleLineHeight
+            }
+
+            // And at the margin that text would take: everything past the first heading
+            // of either kind is inside a group, which is the indent `applyStyles` gives
+            // it.
+            var indent: CGFloat = 0
+            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] {
+                storage.enumerateAttribute(key, in: NSRange(location: 0,
+                                                            length: NSMaxRange(target))) { value, _, stop in
+                    if value != nil {
+                        indent = NoteDocument.textIndent
+                        stop.pointee = true
+                    }
+                }
+            }
+            return CGPoint(x: inset.left + indent, y: inset.top + bottom)
+        }
+
+        /// Where the line after `line` starts, in the text container's own coordinates:
+        /// the bottom of that line's own laid-out box plus its paragraph's trailing
+        /// spacing.
+        ///
+        /// The line's box, not the whole paragraph's fragment: a fragment can run on
+        /// past the line — the empty paragraph a document ending in a break shows is
+        /// laid out inside the one before it — and its bottom is then a line too low.
+        private func nextLineTop(after line: NSRange) -> CGFloat? {
+            // Laid out on demand: TextKit lays out lazily, and asked about a fragment
+            // it has not reached yet it simply says nothing — which is what put the
+            // instruction back up on the title line until an edit forced layout through.
+            (textView as? NoteTextView)?.resolveFullLayout()
+            guard let storage = textView?.textStorage,
+                  let manager = textView?.textLayoutManager,
+                  let content = manager.textContentManager,
+                  let location = content.location(content.documentRange.location, offsetBy: line.location),
+                  let fragment = manager.textLayoutFragment(for: location)
+            else { return nil }
+
+            // The box holding the line's last character — its own break, or its last
+            // glyph on a line that ends the document without one.
+            let start = content.offset(from: content.documentRange.location,
+                                       to: fragment.rangeInElement.location)
+            let index = max(0, NSMaxRange(line) - 1 - start)
+            guard let box = fragment.textLineFragments.first(where: {
+                NSLocationInRange(index, $0.characterRange)
+            }) ?? fragment.textLineFragments.first else { return nil }
+
+            let spacing = (storage.attribute(.paragraphStyle,
+                                             at: min(line.location, storage.length - 1),
+                                             effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing ?? 0
+            let top = fragment.layoutFragmentFrame.minY + box.typographicBounds.maxY + spacing
+            return top.isFinite ? top : nil
+        }
+
+        /// The line the walkthrough is currently talking about: the last one with
+        /// anything on it. An empty heading counts — it is a line waiting for its name,
+        /// and the instruction belongs under it rather than back above it — while the
+        /// empty lines someone left below it do not.
+        private var lastContentLine: NSRange? {
+            guard let storage = textView?.textStorage, storage.length > 0 else { return nil }
+            let text = storage.string as NSString
+
+            var lines: [NSRange] = []
+            var location = 0
+            while location < text.length {
+                let line = text.lineRange(for: NSRange(location: location, length: 0))
+                lines.append(line)
+                location = NSMaxRange(line)
+            }
+
+            for line in lines.reversed() {
+                var written = !text.substring(with: line)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader]
+                where storage.attribute(key, at: line.location, effectiveRange: nil) != nil {
+                    written = true
+                }
+                if written { return line }
+            }
+            return nil
+        }
+
+        /// What the walkthrough is currently asking for: the step, and whether the ask
+        /// is the button or the name of the thing it just made.
+        private struct Asked: Equatable {
+            var step: TutorialGuide.Step
+            var needsName: Bool
+        }
+
+        /// Which line the label is currently set to, so the text is only rebuilt when
+        /// the walkthrough actually moves on rather than on every keystroke.
+        private var shownStep: Asked?
+
+        /// The one line the walkthrough is showing: the button to press, or — once it
+        /// has been pressed and the thing is sitting there empty — the name to give
+        /// what it made. The first step is the note's own name and has no button.
+        private func hintText(for asked: Asked) -> NSAttributedString {
+            switch asked.step {
+            case .title:
+                NoteDocument.promptText(NoteDocument.titlePrompt)
+            case .section, .climb:
+                asked.needsName
+                    ? NoteDocument.promptText(NoteDocument.namePrompts[asked.step.rawValue - 1])
+                    : NoteDocument.hintText([NoteDocument.hints[asked.step.rawValue - 1]])
+            case .attempt:
+                NoteDocument.hintText([NoteDocument.hints[asked.step.rawValue - 1]])
+            case .done:
+                NSAttributedString()
+            }
+        }
+
+        /// What the note has, as the walkthrough measures it: a heading is only done
+        /// once it has been *named* — an empty one is a step of its own, where the ask
+        /// becomes the name rather than the button.
+        private func updateGuide() {
+            // `tracksNote`, not `isRunning`: a walkthrough that has reached the end is
+            // still watching, or deleting the attempt back out could never bring the
+            // last step back.
+            guard parent.guide.tracksNote, let storage = textView?.textStorage else { return }
+            let full = NSRange(location: 0, length: storage.length)
+            let text = storage.string as NSString
+
+            func heading(_ key: NSAttributedString.Key) -> TutorialGuide.Heading {
+                var found = TutorialGuide.Heading.missing
+                storage.enumerateAttribute(key, in: full) { value, range, stop in
+                    guard value != nil else { return }
+                    let line = text.lineRange(for: NSRange(location: range.location, length: 0))
+                    guard !NoteDocument.headingName(text.substring(with: line)).isEmpty else {
+                        found = .unnamed
+                        return
+                    }
+                    found = .named
+                    stop.pointee = true
+                }
+                return found
+            }
+
+            var hasAttempt = false
+            storage.enumerateAttribute(.attachment, in: full) { value, _, stop in
+                if value is AttemptAttachment {
+                    hasAttempt = true
+                    stop.pointee = true
+                }
+            }
+
+            let title = text.substring(with: text.lineRange(for: NSRange(location: 0, length: 0)))
+            parent.guide.update(hasTitle: !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                section: heading(NoteDocument.sectionHeader),
+                                climb: heading(NoteDocument.climbHeader),
+                                hasAttempt: hasAttempt)
+        }
+
+        /// Nothing written under the title line — the note has a name at most. Empty
+        /// lines are not writing: pressing return off the title puts the caret on the
+        /// hints the way it sat on the title's own placeholder, and they stay until
+        /// there is something to read there. An attachment counts as written: its
+        /// marker is not whitespace.
+        private var isUnwritten: Bool {
+            guard let storage = textView?.textStorage else { return true }
+            let text = storage.string as NSString
+            let title = text.lineRange(for: NSRange(location: 0, length: 0))
+            guard NSMaxRange(title) < text.length else { return true }
+            return text.substring(from: NSMaxRange(title))
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        /// How tall the title line came out, its trailing paragraph spacing included —
+        /// the hints hang off the bottom of it.
+        ///
+        /// Measured from the title's own text and the width it has to wrap in, never
+        /// from the laid-out document: a fragment's height moves with what follows it
+        /// (a trailing empty paragraph lands in the same fragment, paragraph spacing
+        /// comes and goes with whether the title is the last paragraph), and the hints
+        /// would then shuffle down a line every time someone pressed return. Nothing
+        /// below the title can change this number; only the title wrapping can.
+        private var titleLineHeight: CGFloat {
+            let font = NoteDocument.titleAttributes[.font] as? UIFont ?? .preferredFont(forTextStyle: .largeTitle)
+            let spacing = (NoteDocument.titleAttributes[.paragraphStyle] as? NSParagraphStyle)?.paragraphSpacing ?? 0
+            var lines: CGFloat = 1
+            if let textView {
+                let container = textView.textContainer
+                let width = container.size.width - container.lineFragmentPadding * 2
+                let text = textView.textStorage.string as NSString
+                let title = text.substring(with: text.lineRange(for: NSRange(location: 0, length: 0)))
+                    .trimmingCharacters(in: .newlines)
+                if !title.isEmpty, width > 0 {
+                    let bounds = (title as NSString).boundingRect(
+                        with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        attributes: [.font: font],
+                        context: nil
+                    )
+                    lines = max(1, (bounds.height / font.lineHeight).rounded())
+                }
+            }
+            return ceil(font.lineHeight * lines) + spacing
         }
 
         /// Only attempts live behind markers now; anything else is dropped (or, for an
@@ -456,16 +810,58 @@ struct NoteEditor: UIViewRepresentable {
         /// into. An empty line becomes the bubble's line where it stands; a line with
         /// anything on it breaks first, and the bubble takes the fresh line.
         func insertClimbHeader() {
-            insertHeadingLine(NoteDocument.headerAttributes(tint: ClimbTint.fallback))
+            insertHeadingLine(NoteDocument.headerAttributes(tint: ClimbTint.fallback),
+                              kind: NoteDocument.climbHeader)
         }
 
         /// The section button: same landing rules as a bubble, but the line styles as
         /// a plain subheader with its fold chevron.
         func insertSectionHeader() {
-            insertHeadingLine(NoteDocument.sectionHeaderAttributes)
+            insertHeadingLine(NoteDocument.sectionHeaderAttributes,
+                              kind: NoteDocument.sectionHeader)
         }
 
-        private func insertHeadingLine(_ header: [NSAttributedString.Key: Any]) {
+        /// Where the group the caret sits in ends: the first line past everything the
+        /// heading above it collapses when folded. A new heading lands there rather than
+        /// at the caret, so pressing the button from the middle of a climb opens the next
+        /// climb *after* it instead of splitting its attempts across the two.
+        ///
+        /// Climbs nest under sections, so only a climb group stops a climb heading — from
+        /// inside a section, one more climb belongs right where the caret is. A section is
+        /// stopped by the section it is in, or, failing that, by the climb.
+        private func endOfGroup(containing location: Int, for kind: NSAttributedString.Key) -> Int {
+            guard let storage = textView?.textStorage, storage.length > 0 else { return location }
+            let string = storage.string as NSString
+            let full = NSRange(location: 0, length: storage.length)
+            let caret = min(location, storage.length - 1)
+            let lineStart = string.lineRange(for: NSRange(location: caret, length: 0)).location
+
+            // Every heading line in the document, in order, tagged with its kind. One
+            // entry per line, the climb kind winning if both attributes land on one —
+            // the same rule serialization uses.
+            var headings: [(start: Int, isSection: Bool)] = []
+            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] {
+                storage.enumerateAttribute(key, in: full) { value, range, _ in
+                    guard value != nil else { return }
+                    let start = string.lineRange(for: NSRange(location: range.location, length: 0)).location
+                    guard !headings.contains(where: { $0.start == start }) else { return }
+                    headings.append((start, key == NoteDocument.sectionHeader))
+                }
+            }
+            headings.sort { $0.start < $1.start }
+
+            // Nothing above the caret: it is in the note's own text, ahead of every
+            // group, and the heading opens one where it stands.
+            guard let above = headings.last(where: { $0.start <= lineStart }) else { return location }
+            if kind == NoteDocument.climbHeader, above.isSection { return location }
+
+            let closesSection = kind == NoteDocument.sectionHeader && above.isSection
+            let next = headings.first { $0.start > lineStart && (!closesSection || $0.isSection) }
+            return next?.start ?? storage.length
+        }
+
+        private func insertHeadingLine(_ header: [NSAttributedString.Key: Any],
+                                       kind: NSAttributedString.Key) {
             guard let textView else { return }
             let storage = textView.textStorage
             var location = endOfQuote(at: min(textView.selectedRange.location, storage.length))
@@ -478,13 +874,46 @@ struct NoteEditor: UIViewRepresentable {
                 if location < NSMaxRange(titleLine) { location = NSMaxRange(titleLine) }
             }
 
+            // Nor does a heading's own line: from inside a section's name, a bubble
+            // lands on the line below it whole. Breaking the name where the caret
+            // happens to be would split it in two and hand the tail the section's own
+            // styling along with the bubble's.
+            if let heading = headingLine(onLineAt: location) ?? sectionLine(onLineAt: location) {
+                location = NSMaxRange(heading)
+            }
+
+            // A heading never lands inside a group: it goes below everything the one
+            // above it owns, so the climb the caret was in keeps all of its attempts.
+            location = max(location, endOfGroup(containing: location, for: kind))
+
+            // A line is one kind of heading or the other, never both: styling over
+            // characters that already carry the other kind — the break at the end of a
+            // section's line, say — would leave a line that serializes as a climb and
+            // draws as a section.
+            let other = kind == NoteDocument.climbHeader
+                ? NoteDocument.sectionHeader
+                : NoteDocument.climbHeader
+            func style(_ storage: NSTextStorage, _ range: NSRange) {
+                storage.removeAttribute(other, range: range)
+                storage.addAttributes(header, range: range)
+            }
+
+            // A heading landing at the end of the note takes the zero-width marker
+            // rather than a break of its own: a break there would leave the note ending
+            // in one, and the empty line that shows under it is a line the user never
+            // asked for. Anywhere else the break is the heading's line and nothing is
+            // left dangling. See `NoteDocument.headingFiller`.
+            let atEnd = location >= storage.length
+            let blank = NSAttributedString(string: atEnd ? NoteDocument.headingFiller : "\n",
+                                           attributes: header)
+
             let caret: Int
 
             if storage.length == 0 || location == 0 {
                 // An empty document: the first line stays the title, the bubble opens
                 // the line under it.
                 let piece = NSMutableAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes)
-                piece.append(NSAttributedString(string: "\n", attributes: header))
+                piece.append(blank)
                 performBlockEdit { $0.replaceCharacters(in: NSRange(location: 0, length: 0), with: piece) }
                 caret = 1
             } else if string.character(at: location - 1) == 0x000A {
@@ -495,11 +924,9 @@ struct NoteEditor: UIViewRepresentable {
                     ? string.lineRange(for: NSRange(location: location, length: 0))
                     : NSRange(location: location, length: 0)
                 if line.length == 1, string.character(at: line.location) == 0x000A {
-                    performBlockEdit { $0.addAttributes(header, range: line) }
+                    performBlockEdit { style($0, line) }
                 } else {
-                    performBlockEdit {
-                        $0.insert(NSAttributedString(string: "\n", attributes: header), at: location)
-                    }
+                    performBlockEdit { $0.insert(blank, at: location) }
                 }
                 caret = location
             } else if location < string.length, string.character(at: location) == 0x000A {
@@ -508,14 +935,14 @@ struct NoteEditor: UIViewRepresentable {
                 performBlockEdit {
                     $0.insert(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes),
                               at: location)
-                    $0.addAttributes(header, range: NSRange(location: location + 1, length: 1))
+                    style($0, NSRange(location: location + 1, length: 1))
                 }
                 caret = location + 1
             } else {
                 // Mid-line, or past the last character of an unterminated line: new
                 // line, then the bubble on its own.
                 let piece = NSMutableAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes)
-                piece.append(NSAttributedString(string: "\n", attributes: header))
+                piece.append(blank)
                 performBlockEdit { $0.replaceCharacters(in: NSRange(location: location, length: 0), with: piece) }
                 caret = location + 1
             }
@@ -546,8 +973,7 @@ struct NoteEditor: UIViewRepresentable {
             }
             guard let start, start > (sectionStart ?? -1) else { return nil }
             let line = (storage.string as NSString).lineRange(for: NSRange(location: start, length: 0))
-            let name = (storage.string as NSString).substring(with: line)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             return name.isEmpty ? nil : name
         }
 
@@ -823,7 +1249,11 @@ struct NoteEditor: UIViewRepresentable {
                 caret = hasBreak ? NSMaxRange(line) : NSMaxRange(line) + 1
             }
             textView.selectedRange = NSRange(location: min(caret, textView.textStorage.length), length: 0)
-            textView.typingAttributes = NoteDocument.bodyAttributes
+            // Derived, not assumed: the line below a heading is inside its group, and
+            // body text there steps in to the group's margin. Left at plain body
+            // attributes the caret sat out at the page's edge until the first
+            // character landed and the restyle moved the line under it.
+            syncTypingAttributes()
         }
 
         /// Return anywhere in a quote: the quote itself is untouched — no break enters
@@ -847,7 +1277,9 @@ struct NoteEditor: UIViewRepresentable {
                 caret = closesLine ? end : end + 1
             }
             textView.selectedRange = NSRange(location: min(caret, textView.textStorage.length), length: 0)
-            textView.typingAttributes = NoteDocument.bodyAttributes
+            // Same as leaving a heading: a line out from under a quote is still inside
+            // whatever group the row belongs to, and the caret has to know it now.
+            syncTypingAttributes()
         }
 
         /// The clock token is atomic under deletion: one backspace into it takes the
@@ -1121,6 +1553,8 @@ struct NoteEditor: UIViewRepresentable {
             return headingLine(onLineAt: offset) ?? sectionLine(onLineAt: offset)
         }
 
+        fileprivate func prepareFoldHaptic() { foldHaptic.prepare() }
+
         /// Folds the group under a heading down to just the heading, or unfolds it.
         /// A restyle, not an edit: the text is untouched, so nothing is persisted and
         /// nothing lands on the undo stack — and a reopened note starts unfolded.
@@ -1148,6 +1582,13 @@ struct NoteEditor: UIViewRepresentable {
             textView.selectedRange = NSRange(location: min(selected.location, storage.length), length: 0)
             isRestyling = false
             syncTypingAttributes()
+
+            // The group has already collapsed; the chevron turns after it, with a tap
+            // under the finger as it goes.
+            foldHaptic.impactOccurred()
+            if let note = textView as? NoteTextView {
+                foldAnimator.spin(lineAt: line.location, to: !folded, in: note)
+            }
         }
 
         // MARK: UITextViewDelegate
@@ -1189,6 +1630,10 @@ struct NoteEditor: UIViewRepresentable {
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isRestyling else { return }
             syncTypingAttributes()
+            // Cheap insurance for the walkthrough's line: its place is measured off
+            // the laid-out text, and a tap is the first thing to happen after a note
+            // opens with its layout still settling.
+            if parent.guide.isRunning { updatePlaceholder() }
         }
 
         /// The quote in the document *is* the attempt's notes, so it is written through
@@ -1279,6 +1724,7 @@ struct NoteEditor: UIViewRepresentable {
         func attachAccessoryView(to textView: UITextView) {
             let toolbar = EditingToolbar(
                 stopwatch: parent.stopwatch,
+                guide: parent.guide,
                 onAddClimb: { [weak self] in self?.parent.onAddClimb() },
                 onAddSection: { [weak self] in self?.parent.onAddSection() },
                 onStartAttempt: { [weak self] in self?.parent.onStartAttempt() }
@@ -1339,13 +1785,13 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         // with the fold chevron at the line's trailing edge.
         if storage.attribute(NoteDocument.climbHeader, at: start, effectiveRange: nil) != nil {
             let line = (storage.string as NSString).lineRange(for: NSRange(location: start, length: 0))
-            let name = (storage.string as NSString).substring(with: line)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             let fragment = ClimbHeaderLayoutFragment(textElement: textElement,
                                                      range: textElement.elementRange)
             fragment.name = name
             fragment.tint = ClimbTint.color(for: name)
             fragment.isFolded = NoteDocument.isFolded(lineAt: start, in: storage)
+            fragment.foldProgress = foldAnimator.progress(forLineAt: start, folded: fragment.isFolded)
             fragment.containerWidth = textView.textContainer.size.width
             fragment.attemptCount = attemptCount(below: NSMaxRange(line), in: storage)
             return fragment
@@ -1354,9 +1800,13 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         // A section heading lays out as its own subheader text; only the chevron
         // is drawn in.
         if storage.attribute(NoteDocument.sectionHeader, at: start, effectiveRange: nil) != nil {
+            let line = (storage.string as NSString).lineRange(for: NSRange(location: start, length: 0))
+            let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             let fragment = SectionHeaderLayoutFragment(textElement: textElement,
                                                        range: textElement.elementRange)
+            fragment.name = name
             fragment.isFolded = NoteDocument.isFolded(lineAt: start, in: storage)
+            fragment.foldProgress = foldAnimator.progress(forLineAt: start, folded: fragment.isFolded)
             fragment.containerWidth = textView.textContainer.size.width
             return fragment
         }
@@ -1402,7 +1852,13 @@ extension NoteEditor.Coordinator: UIGestureRecognizerDelegate {
                            shouldReceive touch: UITouch) -> Bool {
         guard let textView else { return false }
         let point = touch.location(in: textView)
-        return timestamp(at: point) != nil || headingChevron(at: point) != nil
+        if headingChevron(at: point) != nil {
+            // Warmed here, on touch-down, so the tap lands with the fold rather than
+            // a beat after it.
+            prepareFoldHaptic()
+            return true
+        }
+        return timestamp(at: point) != nil
     }
 }
 
@@ -1470,6 +1926,11 @@ final class NoteTextView: UITextView {
     /// The width the document's fragments were vended against.
     private var lastLaidOutWidth: CGFloat = 0
 
+    /// Called when the view's size settles, or changes later. Anything positioned
+    /// against the laid-out text — the walkthrough's instruction line — is placed
+    /// again from here, since the first placement happens before the view has a size.
+    var onResize: (() -> Void)?
+
     /// Fragments capture the container's width when they are vended, and the document
     /// is laid out once on arrival — before the view has a size — so every right-edge
     /// decoration (chevron, attempt count, clock) was measured against nothing and
@@ -1486,6 +1947,20 @@ final class NoteTextView: UITextView {
                            changeInLength: 0)
         textStorage.endEditing()
         resolveFullLayout()
+    }
+
+    /// Redraws one heading's line without changing a thing on it — the same trick
+    /// `revendFragments` plays, narrowed to a single paragraph. A fragment only
+    /// re-vends on an edit, so a chevron mid-spin needs one of these a frame; at one
+    /// paragraph's worth of layout apiece that is cheap enough to run off a display
+    /// link.
+    func redrawFragment(onLineAt location: Int) {
+        guard location < textStorage.length else { return }
+        let line = (textStorage.string as NSString)
+            .lineRange(for: NSRange(location: location, length: 0))
+        textStorage.beginEditing()
+        textStorage.edited(.editedAttributes, range: line, changeInLength: 0)
+        textStorage.endEditing()
     }
 
     /// Where the page must stay while the layout underneath it is being rebuilt.
@@ -1573,14 +2048,21 @@ final class NoteTextView: UITextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        var resized = false
         if bounds.width != lastLaidOutWidth {
             lastLaidOutWidth = bounds.width
             revendFragments()
+            resized = true
         }
         if bounds.height != lastLaidOutHeight {
             lastLaidOutHeight = bounds.height
             updateBottomInset()
+            resized = true
         }
+        // Only on a size change, never on the every-frame layout a scroll brings:
+        // whoever placed something against this view's text measured it at the old
+        // size — the first one being zero, before the view had ever been on screen.
+        if resized { onResize?() }
         guard let held = heldOffset, !isDragging, !isDecelerating else { return }
         let pinned = clamped(held)
         if super.contentOffset != pinned { super.contentOffset = pinned }

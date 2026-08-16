@@ -6,6 +6,8 @@ import UIKit
 /// The note. Type freely; "Start Attempt" drops a recorded go into the document.
 struct SessionDetailView: View {
     @Bindable var session: ClimbSession
+    /// Raise the keyboard as the note opens — true only for a note just created.
+    var startsEditing = false
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
@@ -14,7 +16,11 @@ struct SessionDetailView: View {
     @Query private var climbs: [Climb]
 
     @State private var editorController = NoteEditorController()
-    @State private var stopwatch = StopwatchModel()
+    /// The global bar's model — the bar and the timer live above the whole
+    /// navigation stack (see SessionListView); this page just registers its
+    /// actions with it while on screen.
+    @Environment(BottomBarModel.self) private var barModel
+    private var stopwatch: StopwatchModel { barModel.stopwatch }
     @State private var pendingAttemptID: UUID?
     @State private var openedAttemptID: UUID?
     /// Outlives `openedAttemptID`, which is already nil by the time the sheet's dismissal
@@ -34,6 +40,15 @@ struct SessionDetailView: View {
     @State private var doomedRowCount = 0
     /// Attempts whose rows have been removed but whose deletion is still undoable.
     @State private var detached: [DetachedAttempt] = []
+    /// The tutorial's walkthrough. Built with the session rather than started on
+    /// appearance, so the very first bar this page draws is already the right one.
+    @State private var guide: TutorialGuide
+
+    init(session: ClimbSession, startsEditing: Bool = false) {
+        self.session = session
+        self.startsEditing = startsEditing
+        _guide = State(initialValue: TutorialGuide(session: session))
+    }
 
     var body: some View {
         NoteEditor(
@@ -43,6 +58,7 @@ struct SessionDetailView: View {
             onAddClimb: { editorController.insertClimbHeader() },
             onAddSection: { editorController.insertSectionHeader() },
             stopwatch: stopwatch,
+            guide: guide,
             barPark: barPark,
             onOpenAttempt: {
                 openedAttemptStart = nil
@@ -62,6 +78,7 @@ struct SessionDetailView: View {
             onChange: saveChanges,
             onFocusChange: { focused in
                 isEditing = focused
+                barModel.isEditing = focused
                 // The keyboard can come back without the will-change notification
                 // arriving in a useful order — dismissing the attempt sheet hands
                 // focus straight back — so the bar swap keys off focus too.
@@ -86,27 +103,26 @@ struct SessionDetailView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
-        // The running timer's duration bubble floats here, over the note, rather
-        // than inside either bar: the keyboard accessory's frame is fixed, and
-        // the system bottom bar cannot host it. Positioned so its countdown row
-        // lands exactly on the capsule's spot — parked, the capsule top is near
-        // 86 (34 safe area + 48 capsule + 4), so its bottom is 38 from the true
-        // screen bottom; editing, the keyboard frame includes the 64pt accessory,
-        // whose capsule top sits 8 below its top edge (keyboard height − 8 − 48).
-        // Sits under the toolbar in the chain, so the bar's own buttons still get
-        // their taps first.
-        // The duration panel that grows out from behind the timer capsule —
-        // resident permanently (invisible and untouchable while closed) so the
-        // grow always animates instead of popping in pre-opened.
-        .overlay {
-            TimerBubble(
-                stopwatch: stopwatch,
-                bottomInset: isEditing ? max(38, keyboardHeight - 56) : 38
-            )
+        // The timer renders globally, above the navigation stack
+        // (SessionListView); this page mirrors the state it positions itself
+        // off, and wires the keyboard swap: the global capsule gets the same
+        // flip the bar chrome does — hidden the instant the keyboard bar
+        // lifts, back when the clone lands or the screen exits.
+        // The rest capsule is drawn globally, over the whole stack, so the walkthrough
+        // reaches it through the bar's model rather than directly.
+        .onChange(of: guide.isRestUnlocked, initial: true) {
+            barModel.isRestLocked = !guide.isRestUnlocked
+        }
+        .onAppear {
+            barPark.onParkedVisibilityChange = { barModel.parkedVisible = $0 }
+            // A note opened by the new-note button lands typing at its title, the way
+            // Notes does — the caret sits at the top of an empty document already.
+            if startsEditing { editorController.focus() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             keyboardHeight = max(0, UIScreen.main.bounds.maxY - frame.minY)
+            barModel.keyboardHeight = keyboardHeight
             // The bar swap: rising (only for the note's own keyboard, not a
             // sheet's) hides the parked items this instant and starts tracking
             // the clone's position; the swap back fires off where the clone
@@ -123,85 +139,14 @@ struct SessionDetailView: View {
         .ignoresSafeArea(.keyboard)
         .onDisappear {
             barPark.restore()
+            barModel.isEditing = false
+            barModel.isRestLocked = false
             discardDetachedAttempts()
         }
         // No date in the top bar — it lives in the note itself, above the title.
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbar {
-            if isEditing {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", systemImage: "checkmark") { editorController.endEditing() }
-                        .labelStyle(.iconOnly)
-                        .fontWeight(.semibold)
-                }
-            } else {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            isConfirmingDelete = true
-                        }
-                    } label: {
-                        Label("More", systemImage: "ellipsis")
-                    }
-                }
-            }
-
-            // Parked bar: real system bottom bar items, which is what buys the
-            // Notes push transition — the search field morphs into these. The
-            // system bar cannot ride the keyboard (SwiftUI re-pins its chrome
-            // every frame), so while editing the keyboard accessory clone in
-            // NoteEditor takes over at the same metrics. The items stay in the
-            // toolbar permanently; `barPark` snaps the bar's chrome view
-            // invisible/visible in step with the keyboard, because removing
-            // items would replay the system's insertion animation every time.
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button("Add Climb", systemImage: "plus") { editorController.insertClimbHeader() }
-                    .dampedToolbarMorph()
-                Button("Add Section", systemImage: "textformat.size") {
-                    editorController.insertSectionHeader()
-                }
-                .dampedToolbarMorph()
-                Button("Record Attempt", systemImage: "video.fill", action: startAttempt)
-                    .dampedToolbarMorph()
-            }
-            ToolbarSpacer(.flexible, placement: .bottomBar)
-            ToolbarItemGroup(placement: .bottomBar) {
-                // Idle: a tap stretches the disc leftward to "Rest" and opens
-                // the drawer; picking a duration there turns "Rest" into the
-                // countdown. Running: a tap grows the duration panel up from
-                // behind the countdown capsule.
-                if !stopwatch.hasStarted {
-                    Button {
-                        stopwatch.toggleMenu()
-                    } label: {
-                        // "Rest" stays in the layout permanently and only its
-                        // width animates (0 ↔ natural): inserting/removing it
-                        // made the bar re-layout in a lurch, and the icon's
-                        // slide stuttered. The text itself is yanked invisible
-                        // the instant a close starts; only the width animates.
-                        HStack(spacing: 0) {
-                            Image(systemName: "timer")
-                            Text("Rest")
-                                .font(.system(size: 19, weight: .semibold))
-                                .fixedSize()
-                                .padding(.leading, 6)
-                                .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
-                                .clipped()
-                                .opacity(stopwatch.showsOptions ? 1 : 0)
-                        }
-                    }
-                    .dampedToolbarMorph()
-                } else {
-                    Button {
-                        stopwatch.toggleMenu()
-                    } label: {
-                        StopwatchFace(stopwatch: stopwatch)
-                    }
-                    .dampedToolbarMorph()
-                }
-            }
-        }
+        .toolbar { toolbarContent }
         .confirmationDialog("Delete this session?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
             Button("Delete Session", role: .destructive, action: deleteSession)
         } message: {
@@ -218,11 +163,11 @@ struct SessionDetailView: View {
                  ? "The video will not be deleted."
                  : "Their videos will not be deleted.")
         }
-        .alert("Rest Incomplete", isPresented: $isConfirmingEarlyAttempt) {
+        .alert("Still Resting", isPresented: $isConfirmingEarlyAttempt) {
             Button("Cancel", role: .cancel) {}
             Button("Yes", role: .destructive) { pendingAttemptID = UUID() }
         } message: {
-            Text("Are you sure you want to start?")
+            Text("Are you sure you start an attempt?")
         }
         // A sheet, same as the replay page, so recording and replaying an attempt are
         // one shape on screen. The flow decides for itself when swipe-to-dismiss is
@@ -251,6 +196,111 @@ struct SessionDetailView: View {
                 )
             }
         }
+    }
+
+    // MARK: Toolbar
+
+    /// Split out of `body` purely for the type-checker: inlined, the toolbar's
+    /// branches plus the sized glyphs push the one-expression body past what it
+    /// will solve in reasonable time.
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if isEditing {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done", systemImage: "checkmark") { editorController.endEditing() }
+                    .labelStyle(.iconOnly)
+                    .fontWeight(.semibold)
+            }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        isConfirmingDelete = true
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+            }
+        }
+
+        // The leading pill: real system bottom-bar items, which is what
+        // buys the Notes push transition — the search field morphs into
+        // these. Only the timer stays out of the system bar (rendered
+        // globally over the stack; it could never be chromed right here);
+        // the trailing stand-in below holds its slot open and relays its
+        // taps, since the bar band swallows touches aimed at overlays.
+        // While editing, the keyboard accessory clone in NoteEditor takes
+        // over at the same metrics; `barPark` snaps the bar's chrome and
+        // the global capsule in step with the keyboard.
+        //
+        // Left alone, these draw at the system's own ~27pt bar metric, and a
+        // `.font` on the item does NOT move them — the bar re-applies its own
+        // metric to a `systemImage` label. So the mark is handed over as a
+        // finished raster from `barGlyph` instead, the very same call the
+        // keyboard clone makes: not an SF Symbol as far as the bar is
+        // concerned, so nothing downstream can resize it. Both bars therefore
+        // draw one identical image, and the icons hold their size through the
+        // keyboard swap.
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button {
+                editorController.insertSectionHeader()
+            } label: {
+                Label { Text("Add Section") } icon: {
+                    systemBarGlyph("textformat.size", opacity: lockedFade(guide.isSectionUnlocked))
+                }
+            }
+            .labelStyle(.iconOnly)
+            .dampedToolbarMorph()
+            .allowsHitTesting(guide.isSectionUnlocked)
+            // Darkened out while the tutorial's walkthrough is still working up to
+            // them — see `TutorialGuide`. Both bars dim the same buttons, so the
+            // keyboard swap lands on the same pill either way. Held back by hit
+            // testing rather than `disabled`, which the system dims a second time
+            // on top of ours and would leave this bar darker than the clone.
+            Button {
+                editorController.insertClimbHeader()
+            } label: {
+                Label { Text("Add Climb") } icon: {
+                    systemBarGlyph("plus", opacity: lockedFade(guide.isClimbUnlocked))
+                }
+            }
+            .labelStyle(.iconOnly)
+            .dampedToolbarMorph()
+            .allowsHitTesting(guide.isClimbUnlocked)
+            Button(action: startAttempt) {
+                Label { Text("Record Attempt") } icon: {
+                    systemBarGlyph("video.fill", opacity: lockedFade(guide.isAttemptUnlocked))
+                }
+            }
+            .labelStyle(.iconOnly)
+            .dampedToolbarMorph()
+            .allowsHitTesting(guide.isAttemptUnlocked)
+        }
+        ToolbarSpacer(.flexible, placement: .bottomBar)
+        ToolbarItem(placement: .bottomBar) {
+            Button {
+                stopwatch.toggleMenu()
+            } label: {
+                // Under-sized by the system's ~14-per-side label padding so
+                // the slot matches the capsule; hit area grown back out.
+                // No measuring here — the capsule's position is pinned once
+                // off the settled list, and tracking it across transitions
+                // made it jump.
+                Color.clear
+                    .frame(width: max(20, barModel.capsuleWidth - 28 + 16), height: 48)
+                    .contentShape(Rectangle().inset(by: -14))
+            }
+            .buttonStyle(.plain)
+            // The capsule it stands in for is dark and deaf during the walkthrough;
+            // the relay has to be too, or the panel opens from behind it.
+            .disabled(!guide.isRestUnlocked)
+        }
+        .sharedBackgroundVisibility(.hidden)
+    }
+
+    /// How far down a bar glyph is drawn for a step the walkthrough has not reached.
+    private func lockedFade(_ isUnlocked: Bool) -> Double {
+        isUnlocked ? 1 : TutorialGuide.lockedOpacity
     }
 
     // MARK: Attempt lifecycle

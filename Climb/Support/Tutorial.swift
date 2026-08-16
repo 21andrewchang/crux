@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftData
 
 /// The note every user starts with: a session that explains the bar by setting the
@@ -14,29 +15,42 @@ enum Tutorial {
     /// top without a column on the model to say so.
     static let id = UUID(uuidString: "5EA71001-0000-4000-A000-000000000001")!
 
-    /// The first line is the title, the way it is in any note.
-    static let bodyText = """
-    Tutorial
-    Press \u{E000} to add a climb
-    Press \u{E001} to add a section
-    Press \u{E002} to start an attempt
-    """
+    /// Empty on purpose: the walkthrough's first step is naming the workout, so the
+    /// note has to arrive with nothing in it — the title's own placeholder is what
+    /// says what a name looks like (see `TutorialGuide`).
+    static let bodyText = ""
 
-    /// How earlier builds worded the same note. A copy still reading as one of these
-    /// was never touched, so it is brought up to date; an edited one is the user's.
+    /// Set the first time the walkthrough's last step lands. Not what stops it running
+    /// — the note itself is the only thing that decides that — only a record that this
+    /// copy has been used, so the seeder stops treating its title as one of its own.
+    static let finishedKey = "didFinishTutorialWalkthrough"
+
+    /// How earlier builds worded the same note, back when the hints were characters
+    /// in it. A copy still reading as one of these was never touched, so it is brought
+    /// up to date; an edited one is the user's.
     private static let previousBodies = ["""
     First Session
     Press \u{E000} to add a climb
     Press \u{E001} to add a section
     Press \u{E002} to start an attempt
-    """]
+    """, """
+    Tutorial
+    Press \u{E000} to add a climb
+    Press \u{E001} to add a section
+    Press \u{E002} to start an attempt
+    """,
+    // The name the note carried while the walkthrough started at the section button
+    // rather than at the title. Only cleared for someone the walkthrough has not
+    // finished with — after that it is just a note that happens to be called this.
+    "Tutorial"]
 
     static func seedIfNeeded(into context: ModelContext) {
         let existing = (try? context.fetch(FetchDescriptor<ClimbSession>())) ?? []
         // An earlier build seeded this note under a random id, before the list had a
         // reason to recognise it. Adopt that copy rather than seeding a second beside it.
         if let seeded = existing.first(where: { $0.id == id || previousBodies.contains($0.bodyText) }) {
-            if previousBodies.contains(seeded.bodyText) {
+            if previousBodies.contains(seeded.bodyText),
+               !UserDefaults.standard.bool(forKey: finishedKey) {
                 seeded.bodyText = bodyText
                 seeded.id = id
                 try? context.save()
@@ -55,5 +69,90 @@ enum Tutorial {
         session.bodyText = bodyText
         context.insert(session)
         try? context.save()
+    }
+}
+
+/// Walks the tutorial note through the bar one button at a time: a single instruction
+/// on screen, and only the button that carries it out in the bar. Everything the user
+/// has not been told about yet is simply not there, so there is never more than one
+/// thing to press.
+///
+/// A step is done when the thing it asks for is *in the note* — a named section, a
+/// named climb, a recorded attempt — read back out of the document rather than counted
+/// as taps, so it is the result that advances the walkthrough and not the gesture.
+/// Which also means it is never anywhere the note doesn't say it is: delete the climb
+/// and the walkthrough is back to asking for one, empty the note and it is back at the
+/// beginning. Nothing is remembered but the note itself.
+@Observable
+final class TutorialGuide {
+    /// What the note is missing, in the order it is asked for. `done` is also every
+    /// other note in the app: nothing hidden, nothing prompted.
+    enum Step: Int { case title, section, climb, attempt, done }
+
+    /// How far along a heading the note is: never pressed, pressed but still empty,
+    /// or written in. The middle one is a step of its own — the button has been found
+    /// and the ask is now the name — so the instruction changes rather than sitting
+    /// there telling you to press what you just pressed.
+    enum Heading { case missing, unnamed, named }
+
+    private(set) var step: Step
+
+    /// The step's ask is a name, not a button press.
+    private(set) var needsName = false
+
+    /// Whether this note is the one the walkthrough follows at all. Every other note
+    /// in the app is left alone: full bar, no instructions, nothing to re-read on an
+    /// edit.
+    let tracksNote: Bool
+
+    /// Whether the walkthrough is showing anything right now. `done` is the note
+    /// having everything — until something is deleted back out of it.
+    var isRunning: Bool { tracksNote && step != .done }
+
+    /// A button the walkthrough has not asked for yet stays in the bar — the shape of
+    /// the bar never changes, so nothing shifts under the finger — but it is dark
+    /// enough to read as not-yet-there, and it doesn't answer a tap. The whole bar is
+    /// dark until the workout has a name: the note is the first thing to write.
+    var isSectionUnlocked: Bool { step.rawValue >= Step.section.rawValue }
+    var isClimbUnlocked: Bool { step.rawValue >= Step.climb.rawValue }
+    var isAttemptUnlocked: Bool { step.rawValue >= Step.attempt.rawValue }
+    /// The rest timer is the one thing the walkthrough never asks for: it starts
+    /// itself the moment the first attempt is recorded, which is also the moment the
+    /// walkthrough ends. Dark until then.
+    var isRestUnlocked: Bool { step == .done }
+
+    /// Barely a glyph: enough to see the bar has more in it, not enough to reach for.
+    /// One number for both bars, and the reason every locked button is held back by
+    /// `allowsHitTesting` rather than `disabled`: disabling dims a second time, by an
+    /// amount of the system's choosing that differs between the real bar and the
+    /// keyboard clone, which is exactly how the two drifted apart. Nothing dims these
+    /// now but this.
+    ///
+    /// The number is what the clone was already landing on once its own double-dim
+    /// was measured off a screenshot — 12% dimmed again by the disabled state — so
+    /// this is that look, held on purpose instead of by accident.
+    static let lockedOpacity: Double = 0.055
+
+    init(session: ClimbSession) {
+        let tracks = session.id == Tutorial.id
+        tracksNote = tracks
+        step = tracks ? .title : .done
+    }
+
+    /// Re-read from the document on every edit. The step follows what the note says
+    /// in both directions: delete the climb you just added and the walkthrough goes
+    /// back to asking for one, rather than standing there asking for the next thing.
+    func update(hasTitle: Bool, section: Heading, climb: Heading, hasAttempt: Bool) {
+        guard tracksNote else { return }
+        step = !hasTitle ? .title
+            : section != .named ? .section
+            : climb != .named ? .climb
+            : !hasAttempt ? .attempt : .done
+        needsName = step == .section && section == .unnamed
+            || step == .climb && climb == .unnamed
+        // Noted the first time the note is whole — not to stop the walkthrough, which
+        // is free to come back if the note is emptied again, but so the seeder knows
+        // this note has been lived in and leaves its title alone.
+        if step == .done { UserDefaults.standard.set(true, forKey: Tutorial.finishedKey) }
     }
 }

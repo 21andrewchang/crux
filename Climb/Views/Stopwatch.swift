@@ -1,14 +1,123 @@
 import SwiftUI
 import UIKit
 
+/// The one size every bottom-bar glyph is drawn at, in both bars. The system's
+/// own bar icons measure ~27pt (not the 17–20pt you'd guess) and that's what
+/// these were originally matched to — plus 26.71, video/timer 26.96, section a
+/// couple down for its wider mark. Deliberately smaller than the system's now,
+/// and deliberately ONE number: the marks read as a set rather than each being
+/// optically balanced against the others.
+let barGlyphPointSize: CGFloat = 22
+
 /// A glyph rendered through UIKit's symbol configuration, so the raster matches
-/// the system bottom bar pixel for pixel. The point sizes below were measured
-/// off the live system bar (its icons are ~27pt, not the 17–20pt you'd guess):
-/// plus 26.71 → 28.7×26.7, video/timer 26.96 → 38.7×26.7 / 32×32, all medium.
-private func barGlyph(_ name: String, pointSize: CGFloat) -> Image {
+/// the system bottom bar pixel for pixel — and so the real bar and the keyboard
+/// clone draw from the identical raster, which is what keeps the swap seamless.
+func barGlyph(_ name: String, pointSize: CGFloat = barGlyphPointSize) -> Image {
+    Image(uiImage: barGlyphImage(name, pointSize: pointSize))
+}
+
+/// The raster behind `barGlyph`, before SwiftUI gets hold of it — the system bar
+/// needs the `UIImage` itself so it can fade the mark into it (see `systemBarGlyph`).
+private func barGlyphImage(_ name: String, pointSize: CGFloat) -> UIImage {
     let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
     let image = UIImage(systemName: name, withConfiguration: config) ?? UIImage()
-    return Image(uiImage: image.withRenderingMode(.alwaysTemplate))
+    return image.withRenderingMode(.alwaysTemplate)
+}
+
+/// The width the system bottom bar gives one of its buttons: the mark itself plus
+/// 13pt of the bar's own label padding a side. The clone's slots used to be hard
+/// numbers (58, 54.6667, 64.6667) measured off the live bar — but measured when the
+/// marks were still the system's ~27pt, and `barGlyphPointSize` has come down to 22
+/// since, which took the real bar's slots down with it and left the clone's pill the
+/// wider of the two. Derived from the raster, they move together.
+///
+/// Checked against the live bar's own layout at 22pt: it lays its three items out at
+/// 57.0, 49.3333 and 57.6667, four points apart, for a 172pt capsule — which is this
+/// number, this spacing, and the same 28pt bar margin, exactly.
+func barSlotWidth(_ name: String) -> CGFloat {
+    barGlyphImage(name, pointSize: barGlyphPointSize).size.width + 26
+}
+
+/// The system bottom bar does not draw a handed-in raster at its own size — it
+/// blows it up to the bar's icon box. Measured off the live bar: one 22pt
+/// raster came out 23.0pt tall as a toolbar item and 18.0pt tall in the
+/// keyboard clone's plain HStack, a consistent ~1.28× across all three marks.
+/// So the real bar is handed a pre-shrunk raster and both bars land on the same
+/// rendered mark. Re-measure this if the marks ever drift apart again: screenshot
+/// both bars and compare glyph heights in pixels ÷ 3.
+private let systemBarGlyphScale: CGFloat = 18.0 / 23.0
+
+/// `barGlyph` for the real system bottom bar, pre-shrunk by `systemBarGlyphScale`
+/// so it renders at the same size the keyboard clone draws it.
+///
+/// `opacity` is drawn INTO the raster rather than layered on with the modifier,
+/// for the same reason the size is: the bar re-renders a toolbar item's label its
+/// own way, and an `.opacity` on the button — like a `.font` — never reaches the
+/// mark. Only `.disabled` dimmed these, by an amount of the system's choosing that
+/// left this bar darker than the keyboard clone. Baked in, both bars fade the same
+/// glyph by the same 12% (a template image keeps nothing but its alpha, so a mark
+/// drawn at 12% tints to a mark at 12%).
+///
+/// Which is also why the faded one skips the pre-shrink: redrawing the mark costs
+/// it its symbol-ness, and the bar's blow-up is something it does to SYMBOLS. A
+/// plain raster is drawn at the size it arrives — the size the keyboard clone draws
+/// it at — so pre-shrinking a faded glyph would leave it the smaller of the two.
+func systemBarGlyph(_ name: String, opacity: Double = 1) -> Image {
+    let isFaded = opacity < 1
+    let image = barGlyphImage(
+        name,
+        pointSize: isFaded ? barGlyphPointSize : barGlyphPointSize * systemBarGlyphScale
+    )
+    guard isFaded else { return Image(uiImage: image) }
+
+    let format = UIGraphicsImageRendererFormat.preferred()
+    format.scale = image.scale
+    let faded = UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
+        image.draw(at: .zero, blendMode: .normal, alpha: opacity)
+    }
+    return Image(uiImage: faded.withRenderingMode(.alwaysTemplate))
+}
+
+/// The hybrid bottom bar's shared state. The leading pill is ordinary system
+/// bottom-bar items on each page — which is what buys the native search-field
+/// → pill morph on push — but the TIMER is global: one capsule (and its
+/// duration panel) floating above the whole navigation stack, always there,
+/// because the system toolbar could never render it right (content lagged its
+/// capsule, glass lost its rim, it entered pushes late). The stopwatch living
+/// here means a running rest countdown survives navigation. Each page's system
+/// bar holds an invisible same-width slot open under the capsule and relays
+/// its taps — the bar band swallows touches aimed at overlays.
+@Observable
+@MainActor
+final class BottomBarModel {
+    let stopwatch = StopwatchModel()
+    /// False while the keyboard clone owns the bar (flipped by BarParkModel).
+    var parkedVisible = true
+    /// Mirrored from the session page so the timer panel can sit on the
+    /// capsule in either bar position.
+    var isEditing = false
+    /// Mirrored from the session page's `TutorialGuide`: the capsule is rendered
+    /// globally, above the navigation stack, so this is how the note being walked
+    /// through tells it to sit dark. Cleared as that page leaves.
+    var isRestLocked = false
+    var keyboardHeight: CGFloat = 0
+    /// The timer capsule's live width, measured off the global overlay so the
+    /// pages' system bars can hold a same-sized slot open under it.
+    var capsuleWidth: CGFloat = 48
+    /// Distance from the screen's trailing edge to the capsule's trailing
+    /// edge: the system bar's own side margin, per the live-bar measurements
+    /// the keyboard clone was built from. A constant on purpose — deriving it
+    /// from placeholder geometry meant chasing animating (and sometimes
+    /// pre-layout) bar frames, which flung the capsule around.
+    var capsuleTrailingInset: CGFloat = 28
+
+    /// Physical-bottom inset up to the timer capsule's bottom edge: parked,
+    /// the capsule bottom lands at 28 (the system bar's own metric); editing,
+    /// the keyboard frame includes the 64pt accessory, whose capsule bottom
+    /// is 8 + 48 below its top edge.
+    var timerBottomInset: CGFloat {
+        isEditing ? max(28, keyboardHeight - 56) : 28
+    }
 }
 
 /// Countdown state behind the stopwatch item in the note's bottom bar.
@@ -47,9 +156,11 @@ final class StopwatchModel {
     }
 
     /// Kick off a fresh countdown with the picked duration, less one second so a
-    /// round-minute pick opens on X:59 — showing 10:00 for a beat and then dropping
-    /// to 9:59 shrinks the capsule mid-flight. Picking while one is already running
-    /// simply overrides it.
+    /// round-minute pick opens on X:59 rather than sitting on 10:00 for a beat —
+    /// the countdown reads as already running. (It cost nothing in layout once the
+    /// capsule went fixed-width; originally it was there to stop the drop from
+    /// 10:00 to 9:59 shrinking the capsule mid-flight.) Picking while one is
+    /// already running simply overrides it.
     ///
     /// `from` backdates the start: the rest countdown after an attempt runs from the
     /// moment the recording stopped, not the moment Finish was tapped. A backdated
@@ -87,6 +198,10 @@ final class BarParkModel: NSObject {
     /// The accessory clone riding the keyboard, registered by the note editor
     /// when it builds its input accessory view.
     weak var keyboardBar: UIView?
+    /// Mirrors the chrome flips for SwiftUI content that must swap in step —
+    /// the overlay-drawn timer capsule hides and shows exactly when the parked
+    /// chrome does. Called with `true` when the parked bar is showing.
+    var onParkedVisibilityChange: ((Bool) -> Void)?
 
     /// Swap this many points of travel before the clone would land on the
     /// parked capsule — late enough to read as one bar arriving, early enough
@@ -125,6 +240,7 @@ final class BarParkModel: NSObject {
     func lift() {
         deadline?.cancel()
         armed = false
+        onParkedVisibilityChange?(false)
         keyboardBar?.isHidden = false
         watchedChrome = chrome
         watchedChrome?.isHidden = true
@@ -161,6 +277,7 @@ final class BarParkModel: NSObject {
         deadline?.cancel()
         keyboardBar?.isHidden = false
         chrome?.isHidden = false
+        onParkedVisibilityChange?(true)
     }
 
     private func park() {
@@ -169,6 +286,7 @@ final class BarParkModel: NSObject {
         armed = false
         keyboardBar?.isHidden = true
         chrome?.isHidden = false
+        onParkedVisibilityChange?(true)
     }
 
     private func startWatching() {
@@ -264,25 +382,48 @@ extension View {
     }
 }
 
-/// The started stopwatch's face — timer glyph beside the live countdown. The
-/// system bottom bar supplies the capsule around it and stretches as this resizes.
+/// The stopwatch's face in BOTH states — timer glyph beside a label that reads
+/// "Rest" until a duration is picked and the live countdown after. Deliberately
+/// ONE layout holding ONE Text rather than a branch per state: swapping subtrees
+/// gave the new one its natural width in a single frame, so starting a countdown
+/// snapped the capsule's width and read as a flash. And the label sits in a box
+/// held open by an invisible twin of the widest string it can ever show, so the
+/// capsule is ONE size forever: picking a duration doesn't grow it, ticking down
+/// past a digit doesn't shrink it, and the search field the bar sizes against
+/// this thing never moves. The glyph keeps its own 48pt slot for the same reason.
 struct StopwatchFace: View {
     var stopwatch: StopwatchModel
 
+    /// Monospaced so every digit is interchangeable — that plus the sizing twin
+    /// is what makes one width fit every countdown.
+    private let labelFont = Font.system(size: 19, weight: .semibold).monospacedDigit()
+
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "timer")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(.secondary)
-            // Half-second ticks keep whole-second digits honest without
-            // a per-frame timeline.
-            TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                Text(stopwatch.remaining(at: context.date).clockString)
-                    .font(.system(size: 19, weight: .semibold).monospacedDigit())
+        HStack(spacing: 0) {
+            // The same raster the idle disc shows, so starting a countdown
+            // never resizes, restyles, or shifts the icon.
+            barGlyph("timer")
+                .frame(width: 48)
+            ZStack {
+                // The sizing twin: the longest label the capsule can ever show
+                // (5 monospaced characters, wider than "Rest"). Invisible, but
+                // it's what holds the box — and so the capsule — at one width.
+                Text("10:00")
+                    .font(labelFont)
+                    .hidden()
+                // Half-second ticks keep whole-second digits honest without
+                // a per-frame timeline; idle it just re-renders the same word.
+                TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                    Text(stopwatch.hasStarted
+                         ? stopwatch.remaining(at: context.date).clockString
+                         : "Rest")
+                        .font(labelFont)
+                }
+                // TimelineView greedily fills the width it's offered;
+                // pin it to the text's own size so the twin sets the box.
+                .fixedSize()
             }
-            // TimelineView greedily fills the width it's offered;
-            // pin it to the text's own size so the capsule hugs.
-            .fixedSize()
+            .padding(.trailing, 14)
         }
     }
 }
@@ -296,6 +437,9 @@ struct StopwatchFace: View {
 /// 4pt between the pill's buttons.
 struct EditingToolbar: View {
     var stopwatch: StopwatchModel
+    /// While the tutorial's walkthrough is running the bar holds back every button it
+    /// has not asked for yet, so the one thing to press is the only thing there.
+    var guide: TutorialGuide
     var onAddClimb: () -> Void
     var onAddSection: () -> Void
     var onStartAttempt: () -> Void
@@ -304,26 +448,35 @@ struct EditingToolbar: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 10) {
                 HStack(spacing: 4) {
-                    Button(action: onAddClimb) {
-                        barGlyph("plus", pointSize: 26.7083)
-                            .frame(width: 54.6667, height: 48)
-                            .contentShape(.rect)
-                    }
+                    // One point size for all three (see `barGlyphPointSize`), and
+                    // slots sized the way the system bar sizes its own (see
+                    // `barSlotWidth`), so the pill keeps its footprint and the swap
+                    // doesn't shift.
                     Button(action: onAddSection) {
-                        // A wider glyph than the transport marks; a couple of points
-                        // down reads optically matched beside the 27pt plus.
-                        barGlyph("textformat.size", pointSize: 24)
-                            .frame(width: 58, height: 48)
+                        barGlyph("textformat.size")
+                            .frame(width: barSlotWidth("textformat.size"), height: 48)
                             .contentShape(.rect)
                     }
+                    .opacity(guide.isSectionUnlocked ? 1 : TutorialGuide.lockedOpacity)
+                    .allowsHitTesting(guide.isSectionUnlocked)
+                    Button(action: onAddClimb) {
+                        barGlyph("plus")
+                            .frame(width: barSlotWidth("plus"), height: 48)
+                            .contentShape(.rect)
+                    }
+                    .opacity(guide.isClimbUnlocked ? 1 : TutorialGuide.lockedOpacity)
+                    .allowsHitTesting(guide.isClimbUnlocked)
                     Button(action: onStartAttempt) {
-                        barGlyph("video.fill", pointSize: 26.9583)
-                            .frame(width: 64.6667, height: 48)
+                        barGlyph("video.fill")
+                            .frame(width: barSlotWidth("video.fill"), height: 48)
                             .contentShape(.rect)
                     }
+                    .opacity(guide.isAttemptUnlocked ? 1 : TutorialGuide.lockedOpacity)
+                    .allowsHitTesting(guide.isAttemptUnlocked)
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: .capsule)
+                .animation(.smooth(duration: 0.35), value: guide.step)
 
                 Spacer()
 
@@ -335,45 +488,47 @@ struct EditingToolbar: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Same states as the parked stopwatch item: idle disc, or the running
-    /// face. Either way the button never moves — a tap just toggles the
-    /// detached duration popup; picking a duration is what stretches this
-    /// capsule leftward as the countdown appears.
     private var stopwatchCapsule: some View {
+        TimerCapsule(stopwatch: stopwatch, isLocked: !guide.isRestUnlocked)
+    }
+}
+
+/// The timer button, whole — our glass, our content, one SwiftUI tree — used
+/// verbatim by BOTH bars: the keyboard accessory drops it in directly, and the
+/// parked bar hosts it as a toolbar item with the system's shared capsule
+/// hidden (`sharedBackgroundVisibility(.hidden)`), because content animating
+/// inside the system's own capsule lagged its chrome. "Rest" idle or the
+/// running countdown, at ONE unchanging width either way (see `StopwatchFace`);
+/// a tap toggles the duration panel, and picking a duration swaps the label
+/// underneath without the capsule — or the search field sized against it —
+/// moving at all.
+struct TimerCapsule: View {
+    var stopwatch: StopwatchModel
+    /// Darkened out and deaf to taps while the tutorial's walkthrough is running —
+    /// the same treatment the bar's other buttons get before their step arrives.
+    var isLocked = false
+
+    var body: some View {
         Button {
             stopwatch.toggleMenu()
         } label: {
-            if !stopwatch.hasStarted {
-                // The stretch that announces the drawer: "Rest" sits where the
-                // countdown will once a duration is picked. It stays in the
-                // layout permanently with only its width animating — insertion
-                // made the icon's slide stutter — and is yanked invisible the
-                // instant a close starts.
-                HStack(spacing: 0) {
-                    barGlyph("timer", pointSize: 26.9583)
-                        .frame(width: 48, height: 48)
-                    Text("Rest")
-                        .font(.system(size: 19, weight: .semibold))
-                        .fixedSize()
-                        .padding(.trailing, 14)
-                        .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
-                        .clipped()
-                        .opacity(stopwatch.showsOptions ? 1 : 0)
-                }
+            // "Rest" sits permanently where the countdown will once a
+            // duration is picked, in a box sized for the countdown, so
+            // neither opening the drawer nor starting a rest moves a thing.
+            StopwatchFace(stopwatch: stopwatch)
                 .frame(height: 48)
                 .contentShape(.rect)
-            } else {
-                StopwatchFace(stopwatch: stopwatch)
-                    .padding(.horizontal, 14)
-                    .frame(minWidth: 48)
-                    .frame(height: 48)
-                    .contentShape(.rect)
-            }
+                // Inside the glass, exactly like the pill's glyphs: the bar's other
+                // buttons dim their mark on top of a capsule that stays at full
+                // strength, so dimming this capsule's glass along with its face read
+                // as a different amount of dark.
+                .opacity(isLocked ? TutorialGuide.lockedOpacity : 1)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
         .animation(.smooth(duration: 0.35), value: stopwatch.hasStarted)
-        .animation(.smooth(duration: 0.35), value: stopwatch.isChoosing)
+        .allowsHitTesting(!isLocked)
+        .animation(.smooth(duration: 0.35), value: isLocked)
     }
 }
 
@@ -433,28 +588,9 @@ struct TimerBubble: View {
             // Invisible twin of the capsule's content, at the capsule's own
             // insets: it gives the panel the capsule's width and reserves the
             // 48pt the real button draws over.
-            Group {
-                if stopwatch.hasStarted {
-                    StopwatchFace(stopwatch: stopwatch)
-                        .padding(.horizontal, 14)
-                        .frame(minWidth: 48)
-                } else {
-                    HStack(spacing: 0) {
-                        Image(systemName: "timer")
-                            .font(.system(size: 19, weight: .semibold))
-                            .frame(width: 48)
-                        Text("Rest")
-                            .font(.system(size: 19, weight: .semibold))
-                            .fixedSize()
-                            .padding(.trailing, 14)
-                            .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
-                            .clipped()
-                    }
-                    .frame(minWidth: 48)
-                }
-            }
-            .frame(height: 48)
-            .opacity(0)
+            StopwatchFace(stopwatch: stopwatch)
+                .frame(height: 48)
+                .opacity(0)
         }
         .fixedSize(horizontal: true, vertical: false)
         .buttonStyle(.plain)

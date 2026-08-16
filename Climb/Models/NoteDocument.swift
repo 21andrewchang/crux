@@ -10,60 +10,8 @@ protocol MarkerAttachment: AnyObject {
     var takesNotes: Bool { get }
 }
 
-/// A toolbar button's mark, set in the text like a character — how the seeded first
-/// note names the buttons it tells you to press. It is not a marker: nothing is filed
-/// under it and it takes no entry in `attachmentIDs`. The private-use character it
-/// stands for is all that goes to storage, so the glyph round-trips like any letter.
-final class GlyphAttachment: NSTextAttachment {
-    let character: Character
-
-    init(character: Character) {
-        self.character = character
-        super.init(data: nil, ofType: nil)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
 enum NoteDocument {
     static let attachmentMarker = "\u{FFFC}"
-
-    /// The glyphs a note can name, each as one private-use character in `bodyText`.
-    /// The names are the toolbar's own: whatever `EditingToolbar` draws, this draws.
-    static let glyphs: [Character: String] = [
-        "\u{E000}": "plus",
-        "\u{E001}": "textformat.size",
-        "\u{E002}": "video.fill",
-        "\u{E003}": "timer",
-    ]
-
-    /// What a glyph reads as where there is no room to draw it — the list row's
-    /// one-line preview, and anywhere else the note is quoted as plain text.
-    static let glyphFallbacks: [Character: String] = [
-        "\u{E000}": "+",
-        "\u{E001}": "AA",
-        "\u{E002}": "record",
-        "\u{E003}": "timer",
-    ]
-
-    /// Sized and seated on the text's own baseline, so a glyph sits in a sentence the
-    /// way a word does rather than riding above or below the line.
-    static func glyphAttachment(for character: Character) -> GlyphAttachment? {
-        guard let name = glyphs[character] else { return nil }
-        let font = UIFont.preferredFont(forTextStyle: .body)
-        let configuration = UIImage.SymbolConfiguration(font: font)
-        guard let image = UIImage(systemName: name, withConfiguration: configuration)?
-            .withTintColor(.label, renderingMode: .alwaysOriginal)
-        else { return nil }
-
-        let attachment = GlyphAttachment(character: character)
-        attachment.image = image
-        attachment.bounds = CGRect(x: 0,
-                                   y: (font.capHeight - image.size.height) / 2,
-                                   width: image.size.width,
-                                   height: image.size.height)
-        return attachment
-    }
 
     /// Marks a line as a climb heading — the coloured bubble the attempts below it are
     /// filed under. An attribute on the line's characters, like `noteQuote`: UIKit
@@ -82,6 +30,32 @@ enum NoteDocument {
     /// Prefixes a section heading's line in `bodyText`, the way `headingMarker`
     /// does a climb heading's.
     static let sectionMarker = "\u{FFFA}"
+
+    /// What an empty heading at the very end of a note holds instead of a line break
+    /// of its own: one space, which gives the line something to carry its heading
+    /// attribute on and reads as nothing.
+    ///
+    /// A heading's style lives on its characters, so an empty heading line needs at
+    /// least one. The obvious candidate — its own break — would leave the document
+    /// ending in a newline, and a document ending in a newline shows one more empty
+    /// line under it that the caret can be put on: a line nobody asked for. This is
+    /// what lets a note end at the heading someone just added.
+    ///
+    /// A space rather than a zero-width character on purpose: U+200B is a *format*
+    /// character, and the keyboard's own machinery — autocorrect ranges, word
+    /// boundaries, caret movement — does not treat one as ordinary text. A trailing
+    /// space is the most ordinary thing in a text field there is. It rides along at
+    /// the end of the name from then on, which is why every read of a heading's name
+    /// goes through `headingName`.
+    static let headingFiller = " "
+
+    /// A heading's name as it reads: the line's text with its break, its surrounding
+    /// space, and any filler taken off.
+    static func headingName(_ line: String) -> String {
+        // The zero-width kind is gone from new notes but may sit in one already saved.
+        line.replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Marks a heading's line as folded: everything under it, down to the next
     /// heading of either kind, is styled away to nothing. An attribute on the line's
@@ -253,7 +227,32 @@ enum NoteDocument {
         ]
     }
 
+    /// What an unnamed heading shows in its own place: not "Section name" but a name
+    /// someone would actually give one, so the example teaches the habit as well as
+    /// the field. The climb's doubles as a hint that the colour in a name is what
+    /// tints its bubble.
+    static let sectionPlaceholder = "Warmup"
+    static let climbPlaceholder = "Blue V4"
+
+    /// Text that belongs to the note itself rather than to anything in it: flush with
+    /// the title, at the page's own margin. The indent is what filing a line under a
+    /// climb or a section buys — see `groupedBodyAttributes` — so a line that is under
+    /// neither hangs where the title does.
     static var bodyAttributes: [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = 2
+        return [
+            .font: UIFont.preferredFont(forTextStyle: .body),
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: paragraph,
+        ]
+    }
+
+    /// Body text inside a group — anywhere below a climb or section heading. It steps
+    /// in to the same left edge as the names in those headings and the words in the
+    /// bubbles, so everything filed under a heading reads as one column under it.
+    static var groupedBodyAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         paragraph.paragraphSpacing = 2
@@ -262,20 +261,88 @@ enum NoteDocument {
         // Negative means "in from the trailing edge": the same breathing room on
         // both sides, where a bare head indent would read as left-heavy.
         paragraph.tailIndent = -textIndent
-        return [
-            .font: UIFont.preferredFont(forTextStyle: .body),
-            .foregroundColor: UIColor.label,
-            .paragraphStyle: paragraph,
-        ]
+
+        var attributes = bodyAttributes
+        attributes[.paragraphStyle] = paragraph
+        return attributes
     }
 
     /// Shown behind an empty document, so the first line reads as the title it becomes.
     static var placeholderText: NSAttributedString {
-        let text = NSMutableAttributedString(string: "Workout Name", attributes: titleAttributes)
+        let text = NSMutableAttributedString(string: "Project Day", attributes: titleAttributes)
         text.addAttribute(.foregroundColor,
                           value: UIColor.placeholderText,
                           range: NSRange(location: 0, length: text.length))
         return text
+    }
+
+    /// The bar, a button at a time, each named by the mark that is actually on it —
+    /// in the order the walkthrough asks for them, which is also the order they sit
+    /// in the bar. `TutorialGuide.Step` indexes straight into this.
+    static let hints: [(symbol: String, tail: String)] = [
+        ("textformat.size", "to add a section"),
+        ("plus", "to add a climb"),
+        ("video.fill", "to start an attempt"),
+    ]
+
+    /// Where the walkthrough starts: the note itself, before any of the bar. Nothing
+    /// to press for this one — the caret is already sitting in the title.
+    static let titlePrompt = "Give your workout a name"
+
+    /// What the walkthrough asks once the button has been pressed and the heading is
+    /// sitting there empty: the ask is no longer the button. Indexed like `hints`.
+    static let namePrompts = ["Give the section a name", "Give the climb a name"]
+
+    /// One of those, set like a hint line: same margin, same quiet colour.
+    static func promptText(_ prompt: String) -> NSAttributedString {
+        var attributes = bodyAttributes
+        attributes[.foregroundColor] = UIColor.placeholderText
+        return NSAttributedString(string: prompt, attributes: attributes)
+    }
+
+    /// What an unwritten note says under its title: all three, since nothing about it
+    /// says which one to press first. Placeholder text like the title above it — a
+    /// label behind the document, never characters in it, so it cannot be typed over,
+    /// serialized, or left behind in a note someone has since written.
+    static var hintText: NSAttributedString { hintText(hints) }
+
+    /// The same lines, chosen: the walkthrough shows one at a time.
+    static func hintText(_ hints: [(symbol: String, tail: String)]) -> NSAttributedString {
+        // Body text in the margin the body actually starts at, so the caret that lands
+        // on a hint line sits at the head of it rather than a step in.
+        var attributes = bodyAttributes
+        attributes[.foregroundColor] = UIColor.placeholderText
+
+        let text = NSMutableAttributedString()
+        for (symbol, tail) in hints {
+            if text.length > 0 { text.append(NSAttributedString(string: "\n", attributes: attributes)) }
+            text.append(NSAttributedString(string: "Press ", attributes: attributes))
+            text.append(glyph(symbol))
+            text.append(NSAttributedString(string: " \(tail)", attributes: attributes))
+        }
+        // Over the glyph runs too: an attachment brings no paragraph style of its own,
+        // and a line missing it would hang at a different indent from the others.
+        text.addAttributes(attributes, range: NSRange(location: 0, length: text.length))
+        return text
+    }
+
+    /// A toolbar button's mark, set in a line of words at the size the words are and
+    /// seated on their baseline — so it reads in the sentence rather than riding above
+    /// or below it. The names are the toolbar's own: what `EditingToolbar` draws.
+    private static func glyph(_ name: String) -> NSAttributedString {
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let configuration = UIImage.SymbolConfiguration(font: font)
+        guard let image = UIImage(systemName: name, withConfiguration: configuration)?
+            .withTintColor(.placeholderText, renderingMode: .alwaysOriginal)
+        else { return NSAttributedString() }
+
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        attachment.bounds = CGRect(x: 0,
+                                   y: (font.capHeight - image.size.height) / 2,
+                                   width: image.size.width,
+                                   height: image.size.height)
+        return NSAttributedString(attachment: attachment)
     }
 
     /// Rebuilds the editable document, substituting a live attachment at each marker.
@@ -307,8 +374,6 @@ enum NoteDocument {
                 headingStarts.append(result.length)
             } else if String(character) == sectionMarker {
                 sectionStarts.append(result.length)
-            } else if let glyph = glyphAttachment(for: character) {
-                result.append(NSAttributedString(attachment: glyph))
             } else {
                 result.append(NSAttributedString(string: String(character)))
             }
@@ -416,11 +481,7 @@ enum NoteDocument {
         let full = NSRange(location: 0, length: attributed.length)
 
         attributed.enumerateAttribute(.attachment, in: full) { value, range, _ in
-            if let glyph = value as? GlyphAttachment {
-                // One character out for the one character in, so the sentinel
-                // positions below still map index-for-index.
-                text += String(glyph.character)
-            } else if let attachment = value as? MarkerAttachment {
+            if let attachment = value as? MarkerAttachment {
                 text += attachmentMarker
                 ids.append(attachment.markerID)
             } else {
@@ -591,7 +652,19 @@ enum NoteDocument {
         // Rewritten below from the fold list, so a fold that leaked onto body text —
         // or whose heading stopped being one — dies here rather than lingering.
         storage.removeAttribute(foldedHeading, range: full)
+        // Re-derived below for whatever is trailing now: a space that has stopped
+        // being last must get its width back.
+        storage.removeAttribute(.kern, range: full)
         storage.addAttributes(bodyAttributes, range: full)
+        // Everything past the first heading of either kind is inside some group — a
+        // group only ever ends where the next one begins — so that is where the indent
+        // starts. What comes above it is the note's own text and stays at the margin.
+        if let first = (headings + sections).min(by: { $0.location < $1.location }),
+           NSMaxRange(first) < storage.length {
+            storage.addAttributes(groupedBodyAttributes,
+                                  range: NSRange(location: NSMaxRange(first),
+                                                 length: storage.length - NSMaxRange(first)))
+        }
         let firstLine = text.lineRange(for: NSRange(location: 0, length: 0))
         storage.addAttributes(titleAttributes, range: firstLine)
         for block in blocks where block.id != nil {
@@ -604,13 +677,29 @@ enum NoteDocument {
             styleQuoteLines(in: storage, range: quote.range, id: quote.id)
         }
         // Headings last, tinted from what the line now says — this is what recolours
-        // the bubble as a colour word is typed into it.
-        for line in headings {
-            let name = text.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
-            storage.addAttributes(headerAttributes(tint: ClimbTint.color(for: name)), range: line)
-        }
+        // the bubble as a colour word is typed into it. Climbs after sections, so a
+        // line that has somehow ended up carrying both draws as the climb it
+        // serializes as rather than as a section that reopens as one.
         for line in sections {
             storage.addAttributes(sectionHeaderAttributes, range: line)
+            shrinkTrailingFiller(in: storage, line: line, font: sectionFont)
+        }
+        for line in headings {
+            let name = headingName(text.substring(with: line))
+            storage.addAttributes(headerAttributes(tint: ClimbTint.color(for: name)), range: line)
+            shrinkTrailingFiller(in: storage, line: line, font: headerFont)
+        }
+
+        // A note ending in a heading's own break shows one more line under it, and an
+        // empty last line takes its look from the character before it. Left as the
+        // heading's, that break hands a line of body text the heading's font and — the
+        // one you actually see — its 18pt of room above, which then vanishes the moment
+        // a character lands and the line becomes its own. The break keeps carrying the
+        // heading key, so the line above is still a heading in every other way.
+        if (headings + sections).contains(where: { NSMaxRange($0) == storage.length }),
+           text.character(at: storage.length - 1) == 0x000A {
+            storage.addAttributes(groupedBodyAttributes,
+                                  range: NSRange(location: storage.length - 1, length: 1))
         }
 
         // Folding, last, over everything above: a folded heading's group — attempt
@@ -647,6 +736,21 @@ enum NoteDocument {
             }
         }
         storage.endEditing()
+    }
+
+    /// Takes the width off a heading line's trailing space — the filler an empty
+    /// heading needs to exist at all, and whatever is left of it once a name is typed
+    /// in front of it. Kerned to nothing rather than shrunk: the character keeps the
+    /// line's own font, so the line keeps its height and its baseline, and the caret
+    /// landing after it sits exactly where the name ends instead of a space past it.
+    private static func shrinkTrailingFiller(in storage: NSMutableAttributedString,
+                                             line: NSRange, font: UIFont) {
+        let text = storage.string as NSString
+        var end = NSMaxRange(line)
+        if end > line.location, text.character(at: end - 1) == 0x000A { end -= 1 }
+        guard end > line.location, text.character(at: end - 1) == 0x0020 else { return }
+        let width = (headingFiller as NSString).size(withAttributes: [.font: font]).width
+        storage.addAttribute(.kern, value: -width, range: NSRange(location: end - 1, length: 1))
     }
 
     /// No spacing anywhere: a folded line's only height is its hairline font.
