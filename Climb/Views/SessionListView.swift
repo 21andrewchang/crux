@@ -12,24 +12,34 @@ struct SessionListView: View {
     /// navigation stack below, so it never re-enters or resets across pushes.
     @State private var barModel = BottomBarModel()
 
+    /// The user's own sessions. The seeded walkthrough is not one of them — it belongs
+    /// to onboarding, which opens it on its own and is the only place it is ever read —
+    /// so the list never carries it, pinned or otherwise. Nor is the goal note: it is a
+    /// page of the app, pinned above the weeks on its own terms rather than filed under
+    /// the week it happened to be written in.
+    private var ownSessions: [ClimbSession] {
+        sessions.filter { $0.id != Tutorial.id && $0.id != Goals.id }
+    }
+
+    /// The pinned goal note, absent only for the frame before the seed lands.
+    private var goal: ClimbSession? { Goals.note(in: sessions) }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     /// Title and body both match, so searching finds a session by anything written in it.
     private var visibleSessions: [ClimbSession] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return sessions }
-        return sessions.filter { $0.bodyText.localizedCaseInsensitiveContains(query) }
-    }
-
-    /// The seeded guide, pinned to the top in a card of its own — it belongs to no
-    /// week, so it is held out of the grouping below and shows no date.
-    private var pinned: ClimbSession? {
-        visibleSessions.first { $0.id == Tutorial.id }
+        guard !query.isEmpty else { return ownSessions }
+        return ownSessions.filter { $0.bodyText.localizedCaseInsensitiveContains(query) }
     }
 
     /// One card per calendar week, newest first. Sessions keep the query's newest-first
     /// order inside each week because `Dictionary(grouping:)` preserves input order.
     private var weeks: [SessionWeek] {
         let calendar = Calendar.current
-        let byWeek = Dictionary(grouping: visibleSessions.filter { $0.id != Tutorial.id }) { session in
+        let byWeek = Dictionary(grouping: visibleSessions) { session in
             calendar.dateInterval(of: .weekOfYear, for: session.createdAt)?.start ?? session.createdAt
         }
         return byWeek.keys.sorted(by: >).map { start in
@@ -42,10 +52,15 @@ struct SessionListView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if sessions.isEmpty {
-                    emptyState
-                } else if visibleSessions.isEmpty {
+                // The goal card is pinned whatever else the list has in it, so an empty
+                // list is still a list — with the emptiness said inside it, under the
+                // card, rather than in place of the whole page. A search that finds
+                // nothing is the one thing that replaces it: the card is not a result.
+                if isSearching, visibleSessions.isEmpty {
                     noResultsState
+                } else if ownSessions.isEmpty, !Goals.isPinned {
+                    // Nothing pinned above them, so an empty list is an empty page.
+                    emptyState
                 } else {
                     list
                 }
@@ -91,38 +106,8 @@ struct SessionListView: View {
             .navigationDestination(item: $newSession) { session in
                 SessionDetailView(session: session, startsEditing: true)
             }
-            .task { Tutorial.seedIfNeeded(into: modelContext) }
         }
-        // The global timer: its duration panel, and the capsule itself — Rest,
-        // or the running countdown — floating above every page of the stack,
-        // simply always there. Each page's leading items stay ordinary system
-        // bottom-bar chrome (that's what buys the native search-field → pill
-        // morph on push); only the timer lives up here. The capsule steps
-        // aside while the keyboard clone is riding. Sheets and alerts still
-        // present above it.
-        .overlay {
-            TimerBubble(
-                stopwatch: barModel.stopwatch,
-                bottomInset: barModel.timerBottomInset
-            )
-        }
-        .overlay {
-            if barModel.parkedVisible {
-                ZStack(alignment: .bottomTrailing) {
-                    Color.clear
-                    TimerCapsule(stopwatch: barModel.stopwatch, isLocked: barModel.isRestLocked)
-                        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) {
-                            barModel.capsuleWidth = $0
-                        }
-                        // Pinned to the slot the system actually allocated for
-                        // the placeholder item; bottom is the bar's own 28.
-                        .padding(.trailing, barModel.capsuleTrailingInset)
-                        .padding(.bottom, 28)
-                }
-                .ignoresSafeArea()
-            }
-        }
-        .environment(barModel)
+        .bottomBarHost(barModel)
     }
 
     /// Notes' list: rows sit in rounded cards on a grouped background, no separators —
@@ -131,19 +116,24 @@ struct SessionListView: View {
     /// behind, `secondarySystemGroupedBackground` for the card.
     private var list: some View {
         List {
-            if let pinned {
+            // Above every week, headerless: the goal is not something that happened in
+            // a week, it is what the weeks are for.
+            if Goals.isPinned, !isSearching, let goal {
                 Section {
-                    // A one-row `ForEach` so the card swipes to delete like any other:
-                    // the guide is an ordinary note, pinned but not protected.
-                    ForEach([pinned]) { session in
-                        NavigationLink {
-                            SessionDetailView(session: session)
-                        } label: {
-                            row(for: session, showsDate: false)
-                        }
+                    NavigationLink {
+                        SessionDetailView(session: goal)
+                    } label: {
+                        goalRow(for: goal)
                     }
-                    .onDelete { delete($0, from: [pinned]) }
                     .listRowSeparator(.hidden)
+                }
+            }
+            if Goals.isPinned, !isSearching, ownSessions.isEmpty {
+                Section {
+                    emptyState
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             }
             ForEach(weeks) { week in
@@ -171,17 +161,15 @@ struct SessionListView: View {
         .listStyle(.insetGrouped)
     }
 
-    private func row(for session: ClimbSession, showsDate: Bool = true) -> some View {
+    private func row(for session: ClimbSession) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(session.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
-                if showsDate {
-                    Text(session.createdAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
-                        .font(.subheadline)
-                        .foregroundStyle(.quaternary)
-                }
+                Text(session.createdAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                    .font(.subheadline)
+                    .foregroundStyle(.quaternary)
             }
             Text(session.previewText)
                 .font(.subheadline)
@@ -189,6 +177,32 @@ struct SessionListView: View {
                 .lineLimit(1)
         }
         .padding(.vertical, 4)
+    }
+
+    /// The pinned card. A session row with a mark in front of it: the same two lines,
+    /// minus the date, since a goal is not dated the way a session is.
+    private func goalRow(for goal: ClimbSession) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "target")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(goal.displayTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(goalPreview(for: goal))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// What is written under the title, or what the page is for while nothing is —
+    /// `previewText`'s own fallback counts attempts, which a goal note has none of.
+    private func goalPreview(for goal: ClimbSession) -> String {
+        goal.bodyPreview ?? Goals.placeholder
     }
 
     private var emptyState: some View {

@@ -8,6 +8,10 @@ struct SessionDetailView: View {
     @Bindable var session: ClimbSession
     /// Raise the keyboard as the note opens — true only for a note just created.
     var startsEditing = false
+    /// The note is standing in for the whole app during onboarding. Its own top-bar
+    /// actions — the ellipsis, and Delete under it — are not part of the walkthrough,
+    /// so the corner is left to whoever is hosting it (see `RootView`).
+    var isOnboarding = false
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
@@ -44,9 +48,10 @@ struct SessionDetailView: View {
     /// appearance, so the very first bar this page draws is already the right one.
     @State private var guide: TutorialGuide
 
-    init(session: ClimbSession, startsEditing: Bool = false) {
+    init(session: ClimbSession, startsEditing: Bool = false, isOnboarding: Bool = false) {
         self.session = session
         self.startsEditing = startsEditing
+        self.isOnboarding = isOnboarding
         _guide = State(initialValue: TutorialGuide(session: session))
     }
 
@@ -205,7 +210,11 @@ struct SessionDetailView: View {
     /// will solve in reasonable time.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if isEditing {
+        // Onboarding owns both corners itself — back to the quiz, and Skip/Done — so
+        // the note contributes nothing up top while it is the walkthrough.
+        if isOnboarding {
+            ToolbarItem(placement: .topBarTrailing) { EmptyView() }
+        } else if isEditing {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done", systemImage: "checkmark") { editorController.endEditing() }
                     .labelStyle(.iconOnly)

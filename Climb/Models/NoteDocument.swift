@@ -69,13 +69,24 @@ enum NoteDocument {
     /// between the bubble and the fold chevron.
     static let countReserve: CGFloat = 72
 
+    /// The room a heading keeps under itself, before the first line of what it heads:
+    /// a body line's own, opened up a little so that line reads as filed under the
+    /// heading rather than run on from it. Both kinds of heading keep the same one, so
+    /// the note has a single rhythm — and so does the walkthrough's instruction, which
+    /// lands exactly where that first line would.
+    static let headingSpacing: CGFloat = 8
+
     /// The name reads in the climb's colour; the bubble behind it is drawn by the
-    /// layout fragment, which inflates around this line — the spacing above and below
-    /// is its breathing room.
+    /// layout fragment, which swells past the line by `inflate` above and below. That
+    /// swell is paid for out of the paragraph's own spacing — held open above so the
+    /// bubble clears the line before it, and added under `headingSpacing` below — so
+    /// what shows between the bubble and its neighbours is the same gap a section
+    /// heading leaves.
     static func headerAttributes(tint: UIColor) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.paragraphSpacingBefore = 18
-        paragraph.paragraphSpacing = 10
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacingBefore = ClimbHeaderLayoutFragment.inflate
+        paragraph.paragraphSpacing = headingSpacing + ClimbHeaderLayoutFragment.inflate
         paragraph.firstLineHeadIndent = textIndent
         paragraph.headIndent = textIndent
         // Stops short of the trailing edge, where the attempt count and the fold
@@ -212,10 +223,11 @@ enum NoteDocument {
     /// a subheader. The text on the line *is* the section's name.
     static var sectionHeaderAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
-        // Extra room above, little below: the heading belongs to what follows it,
-        // same as a climb heading's spacing.
-        paragraph.paragraphSpacingBefore = 18
-        paragraph.paragraphSpacing = 6
+        // Spaced like body text above — a section heading is a line of the note set
+        // bigger, not a block set apart, so nothing extra opens over it — and like
+        // every heading under it.
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = headingSpacing
         // Flush left, like the title: the subheader hangs at the margin while the
         // body text under it keeps its indent.
         paragraph.tailIndent = -(textIndent + chevronReserve)
@@ -690,16 +702,19 @@ enum NoteDocument {
             shrinkTrailingFiller(in: storage, line: line, font: headerFont)
         }
 
-        // A note ending in a heading's own break shows one more line under it, and an
-        // empty last line takes its look from the character before it. Left as the
-        // heading's, that break hands a line of body text the heading's font and — the
-        // one you actually see — its 18pt of room above, which then vanishes the moment
-        // a character lands and the line becomes its own. The break keeps carrying the
-        // heading key, so the line above is still a heading in every other way.
-        if (headings + sections).contains(where: { NSMaxRange($0) == storage.length }),
-           text.character(at: storage.length - 1) == 0x000A {
-            storage.addAttributes(groupedBodyAttributes,
-                                  range: NSRange(location: storage.length - 1, length: 1))
+        // A note ending in a break shows one more line under it, and that empty line
+        // takes its look from the character before it — the break. Left as the title's
+        // or a heading's, it hands a line of body text their font and the room they
+        // keep above themselves, which then vanishes the moment a character lands and
+        // the line becomes its own. So the final break is styled as the body line it is
+        // about to become: what is laid out there before anything is typed is what will
+        // be laid out there after. It keeps carrying whatever key it had, so the line
+        // it ends is still a heading in every other way, and a paragraph takes its
+        // style from its first character, so nothing above it moves.
+        if text.character(at: storage.length - 1) == 0x000A {
+            let last = NSRange(location: storage.length - 1, length: 1)
+            let inGroup = (headings + sections).contains { $0.location < last.location }
+            storage.addAttributes(inGroup ? groupedBodyAttributes : bodyAttributes, range: last)
         }
 
         // Folding, last, over everything above: a folded heading's group — attempt

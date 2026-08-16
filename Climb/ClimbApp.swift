@@ -5,7 +5,7 @@ import SwiftData
 struct ClimbApp: App {
     var body: some Scene {
         WindowGroup {
-            SessionListView()
+            RootView()
                 // The app is one surface, black, in any system appearance.
                 .preferredColorScheme(.dark)
                 .tint(.white)

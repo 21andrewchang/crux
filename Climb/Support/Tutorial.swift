@@ -5,14 +5,15 @@ import SwiftData
 /// The note every user starts with: a session that explains the bar by setting the
 /// bar's own glyphs in its text, so the mark you read is the mark you press.
 ///
-/// It is an ordinary session in every other way — editable, deletable — and it is
-/// seeded exactly once, so throwing it away is final rather than something the next
-/// launch undoes.
+/// It belongs to onboarding and to nothing else: opened on its own, once, and never
+/// listed afterwards — what the user writes in it is practice, not their first
+/// session. Seeded exactly once, so throwing it away is final rather than something
+/// the next launch undoes.
 enum Tutorial {
     private static let seededKey = "didSeedFirstSession"
 
-    /// Fixed, so the list can pick this one note out of the query and pin it to the
-    /// top without a column on the model to say so.
+    /// Fixed, so this one note can be picked out of the query — opened by onboarding,
+    /// held out of the list — without a column on the model to say so.
     static let id = UUID(uuidString: "5EA71001-0000-4000-A000-000000000001")!
 
     /// Empty on purpose: the walkthrough's first step is naming the workout, so the
@@ -68,6 +69,22 @@ enum Tutorial {
         session.id = id
         session.bodyText = bodyText
         context.insert(session)
+        try? context.save()
+    }
+
+    /// Throws the practice note away and forgets it was ever seeded, so the next time
+    /// onboarding reaches the walkthrough it arrives at an empty note again. For
+    /// running the flow more than once — see `Onboarding.loopsForDevelopment`.
+    static func reset(in context: ModelContext) {
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: seededKey)
+        defaults.set(false, forKey: finishedKey)
+
+        let existing = (try? context.fetch(FetchDescriptor<ClimbSession>())) ?? []
+        for note in existing where note.id == id {
+            note.attempts.forEach(VideoStore.delete)
+            context.delete(note)
+        }
         try? context.save()
     }
 }
@@ -154,5 +171,9 @@ final class TutorialGuide {
         // is free to come back if the note is emptied again, but so the seeder knows
         // this note has been lived in and leaves its title alone.
         if step == .done { UserDefaults.standard.set(true, forKey: Tutorial.finishedKey) }
+        // Onboarding's corner word follows the same reading of the note: Skip until
+        // every part of the bar has been used, Done after — and back to Skip if the
+        // note is emptied out again.
+        Onboarding.shared.tutorialComplete = step == .done
     }
 }

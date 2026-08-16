@@ -135,7 +135,7 @@ struct NoteEditor: UIViewRepresentable {
 
         context.coordinator.textView = textView
         textView.onResize = { [weak coordinator = context.coordinator] in
-            coordinator?.placeHint()
+            coordinator?.placeHint(force: true)
         }
         context.coordinator.attachAccessoryView(to: textView)
         context.coordinator.attachDateLine(to: textView, date: session.createdAt)
@@ -450,11 +450,58 @@ struct NoteEditor: UIViewRepresentable {
         /// `updatePlaceholder` so a resize can place it again without re-reading the
         /// document — and because the first placement happens before the view has a
         /// size, when there is nothing yet to measure against.
-        func placeHint() {
+        func placeHint(force: Bool = false) {
             guard parent.guide.isRunning else { return }
+            // Placed once per line it is placed under, and then left alone. Writing on
+            // that line does not move it: the line keeps its place in the note, so the
+            // instruction keeps its place under it — and none of the small differences
+            // between what an empty line measures and what a written one does can show
+            // up as a step. It is placed again when it has a different line to sit
+            // under, when the step changes, or when the view resizes and every measure
+            // is stale anyway.
+            let anchor = Anchor(step: parent.guide.step,
+                                needsName: parent.guide.needsName,
+                                line: hintTarget().location)
+            guard force || anchor != placedAnchor else { return }
+            placedAnchor = anchor
+
             let origin = hintOrigin
             hintTop?.constant = origin.y
             hintLeading?.constant = origin.x
+        }
+
+        /// What the instruction's current placement was measured for.
+        private struct Anchor: Equatable {
+            var step: TutorialGuide.Step
+            var needsName: Bool
+            var line: Int
+        }
+
+        private var placedAnchor: Anchor?
+
+        /// The line the instruction sits under: the last one with anything on it, or
+        /// the empty line the note ends on if it was left with one.
+        ///
+        /// Read off the document alone, never off the caret. The empty line under the
+        /// title is part of the note — it is saved and it comes back — so the
+        /// instruction has to sit under it either way. Taken from the caret instead,
+        /// the line was only there while someone was standing on it: a reopened note
+        /// has its caret back at the top, the instruction came up a line, and the
+        /// empty line the note was left with read as gone until the first tap put the
+        /// caret back on it.
+        private func hintTarget() -> NSRange {
+            guard let textView, textView.textStorage.length > 0 else {
+                return NSRange(location: 0, length: 0)
+            }
+            let text = textView.textStorage.string as NSString
+            var target = lastContentLine ?? text.lineRange(for: NSRange(location: 0, length: 0))
+            // A note ending in a break shows one more line under everything written,
+            // and that line is where the next thing goes.
+            if text.character(at: text.length - 1) == 0x000A {
+                let trailing = NSRange(location: text.length, length: 0)
+                if trailing.location > target.location { target = trailing }
+            }
+            return target
         }
 
         /// Where the walkthrough's line goes: the line under everything written so far,
@@ -472,17 +519,12 @@ struct NoteEditor: UIViewRepresentable {
             let titleLine = storage.length > 0
                 ? text.lineRange(for: NSRange(location: 0, length: 0))
                 : NSRange(location: 0, length: 0)
-            let caretLine = storage.length > 0
-                ? text.lineRange(for: NSRange(location: min(textView.selectedRange.location,
-                                                            storage.length), length: 0))
-                : NSRange(location: 0, length: 0)
 
-            // The line under the last thing written — or under the caret, if the caret
-            // has gone below that. The instruction is never the line the caret is on:
-            // opening a line steps it down and the instruction moves with it, so what
-            // gets typed there always lands above the instruction, never over it.
-            var target = lastContentLine ?? titleLine
-            if caretLine.location > target.location { target = caretLine }
+            // The line under the last thing written — or under the empty line the note
+            // ends on, if it has one. The instruction is never the line the caret is
+            // on: opening a line steps it down and the instruction moves with it, so
+            // what gets typed there always lands above the instruction, never over it.
+            let target = hintTarget()
 
             // Nothing under the title yet — an empty note included, where the first
             // instruction is the title's own. Measured off the title the way the note's
@@ -499,71 +541,88 @@ struct NoteEditor: UIViewRepresentable {
             // next — which is where the next line of text starts. An opened line at the
             // very end of the note has no characters to measure, so there the caret
             // standing on it is the measure.
-            let bottom: CGFloat
-            if target.length == 0 {
-                // The caret's own line box gives the top; the rest is what one line of
-                // what would be typed there takes up. Measured rather than read off the
-                // caret's height: the caret is as tall as its font and no taller, while
-                // a line of text also carries its line and paragraph spacing — which is
-                // the few points the instruction used to jump by on the first keystroke.
-                let rect = textView.caretRect(for: textView.selectedTextRange?.start
-                                              ?? textView.endOfDocument)
-                let typing = textView.typingAttributes
-                let font = typing[.font] as? UIFont ?? .preferredFont(forTextStyle: .body)
-                let style = typing[.paragraphStyle] as? NSParagraphStyle
-                let line = font.lineHeight + (style?.lineSpacing ?? 0) + (style?.paragraphSpacing ?? 0)
-                bottom = rect.minY.isFinite ? rect.minY - inset.top + line : titleLineHeight
-            } else {
-                bottom = nextLineTop(after: target) ?? titleLineHeight
-            }
+            let bottom = nextLineTop(under: target) ?? titleLineHeight
 
-            // And at the margin that text would take: everything past the first heading
-            // of either kind is inside a group, which is the indent `applyStyles` gives
-            // it.
-            var indent: CGFloat = 0
-            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] {
-                storage.enumerateAttribute(key, in: NSRange(location: 0,
-                                                            length: NSMaxRange(target))) { value, _, stop in
-                    if value != nil {
-                        indent = NoteDocument.textIndent
-                        stop.pointee = true
-                    }
-                }
-            }
-            return CGPoint(x: inset.left + indent, y: inset.top + bottom)
+            // Always at the page's margin, whatever the line under it is filed inside:
+            // the instruction is the walkthrough talking, not a line of the note, so it
+            // hangs where every other one of its lines has hung.
+            return CGPoint(x: inset.left, y: inset.top + bottom)
         }
 
-        /// Where the line after `line` starts, in the text container's own coordinates:
+        /// Where the line under `line` starts, in the text container's own coordinates:
         /// the bottom of that line's own laid-out box plus its paragraph's trailing
         /// spacing.
         ///
         /// The line's box, not the whole paragraph's fragment: a fragment can run on
         /// past the line — the empty paragraph a document ending in a break shows is
         /// laid out inside the one before it — and its bottom is then a line too low.
-        private func nextLineTop(after line: NSRange) -> CGFloat? {
+        /// That empty line is measured here too, as the last box of the fragment it
+        /// was laid out in: one measurement for every case, which is what keeps the
+        /// instruction from stepping as a line it was placed under becomes real.
+        private func nextLineTop(under line: NSRange) -> CGFloat? {
             // Laid out on demand: TextKit lays out lazily, and asked about a fragment
             // it has not reached yet it simply says nothing — which is what put the
             // instruction back up on the title line until an edit forced layout through.
             (textView as? NoteTextView)?.resolveFullLayout()
-            guard let storage = textView?.textStorage,
+            guard let storage = textView?.textStorage, storage.length > 0,
                   let manager = textView?.textLayoutManager,
-                  let content = manager.textContentManager,
-                  let location = content.location(content.documentRange.location, offsetBy: line.location),
+                  let content = manager.textContentManager
+            else { return nil }
+
+            // An empty line at the end of the note has no characters of its own: it is
+            // the last box of the fragment before it, and it takes its spacing from the
+            // character that fragment ends with.
+            let isTrailingEmpty = line.length == 0
+            let anchor = isTrailingEmpty ? max(0, line.location - 1) : line.location
+            guard let location = content.location(content.documentRange.location, offsetBy: anchor),
                   let fragment = manager.textLayoutFragment(for: location)
             else { return nil }
 
             // The box holding the line's last character — its own break, or its last
             // glyph on a line that ends the document without one.
+            let boxes = fragment.textLineFragments
             let start = content.offset(from: content.documentRange.location,
                                        to: fragment.rangeInElement.location)
             let index = max(0, NSMaxRange(line) - 1 - start)
-            guard let box = fragment.textLineFragments.first(where: {
-                NSLocationInRange(index, $0.characterRange)
-            }) ?? fragment.textLineFragments.first else { return nil }
+            let found = isTrailingEmpty
+                ? boxes.indices.last
+                : boxes.firstIndex(where: { NSLocationInRange(index, $0.characterRange) })
+                    ?? boxes.indices.first
+            guard let found, let box = boxes.indices.contains(found) ? boxes[found] : nil
+            else { return nil }
 
-            let spacing = (storage.attribute(.paragraphStyle,
-                                             at: min(line.location, storage.length - 1),
-                                             effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing ?? 0
+            func paragraphSpacing(at offset: Int) -> CGFloat {
+                (storage.attribute(.paragraphStyle, at: min(max(offset, 0), storage.length - 1),
+                                   effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing ?? 0
+            }
+
+            // Nothing of the fragment left below the line. If the note carries on past
+            // it, the answer is not measured at all — it is read off the paragraph that
+            // actually landed there, spacing and all. If the line ends the note, the
+            // fragment's own bottom plus the room its paragraph keeps under itself is
+            // where that paragraph would land: a fragment's frame stops at its last
+            // line, the trailing spacing being what the next one is pushed down by.
+            if !isTrailingEmpty, found == boxes.count - 1 {
+                let end = fragment.rangeInElement.endLocation
+                if content.offset(from: content.documentRange.location, to: end) < storage.length,
+                   let next = manager.textLayoutFragment(for: end), next !== fragment {
+                    let top = next.layoutFragmentFrame.minY
+                    if top.isFinite { return top }
+                }
+                let bottom = fragment.layoutFragmentFrame.maxY + paragraphSpacing(at: line.location)
+                return bottom.isFinite ? bottom : nil
+            }
+
+            // The line's own trailing spacing — and, for the empty line at the end, the
+            // spacing of the paragraph it is laid out inside as well. That one is not in
+            // its box: sharing a fragment, there is nothing between them. The moment a
+            // character lands the line becomes a paragraph of its own and the fragment
+            // above it opens up by exactly that much, which is the few points the
+            // instruction has been stepping by.
+            var spacing = paragraphSpacing(at: anchor)
+            if isTrailingEmpty {
+                spacing += paragraphSpacing(at: start)
+            }
             let top = fragment.layoutFragmentFrame.minY + box.typographicBounds.maxY + spacing
             return top.isFinite ? top : nil
         }
@@ -860,6 +919,30 @@ struct NoteEditor: UIViewRepresentable {
             return next?.start ?? storage.length
         }
 
+        /// The line at `location` if it is a heading of `kind` that has not been named
+        /// yet. An empty heading reads as nothing on the page — its line holds only a
+        /// break or the filler space — so this is what stops the button from stacking
+        /// invisible headings under each other when it is pressed again.
+        private func unnamedHeadingLine(ofKind kind: NSAttributedString.Key,
+                                        at location: Int) -> NSRange? {
+            guard let storage = textView?.textStorage,
+                  let line = line(carrying: kind, at: location) else { return nil }
+            let text = (storage.string as NSString).substring(with: line)
+            return NoteDocument.headingName(text).isEmpty ? line : nil
+        }
+
+        /// Puts the caret in a heading that is already sitting there empty, so pressing
+        /// the button a second time asks for the name again rather than making another
+        /// one. The caret lands where a freshly inserted heading would leave it: at the
+        /// line's start, ahead of its break or filler.
+        private func reuseUnnamedHeading(_ line: NSRange) {
+            guard let textView else { return }
+            textView.selectedRange = NSRange(location: min(line.location, textView.textStorage.length),
+                                             length: 0)
+            syncTypingAttributes()
+            textView.becomeFirstResponder()
+        }
+
         private func insertHeadingLine(_ header: [NSAttributedString.Key: Any],
                                        kind: NSAttributedString.Key) {
             guard let textView else { return }
@@ -874,6 +957,14 @@ struct NoteEditor: UIViewRepresentable {
                 if location < NSMaxRange(titleLine) { location = NSMaxRange(titleLine) }
             }
 
+            // The caret is already in an empty one of these: that is the heading this
+            // press is asking for, so it takes the caret instead of a second, just as
+            // invisible, heading landing under it.
+            if let empty = unnamedHeadingLine(ofKind: kind, at: location) {
+                reuseUnnamedHeading(empty)
+                return
+            }
+
             // Nor does a heading's own line: from inside a section's name, a bubble
             // lands on the line below it whole. Breaking the name where the caret
             // happens to be would split it in two and hand the tail the section's own
@@ -885,6 +976,13 @@ struct NoteEditor: UIViewRepresentable {
             // A heading never lands inside a group: it goes below everything the one
             // above it owns, so the climb the caret was in keeps all of its attempts.
             location = max(location, endOfGroup(containing: location, for: kind))
+
+            // Same again for where it would land: pressing the button from somewhere
+            // else in the note still finds the empty heading already waiting there.
+            if let empty = unnamedHeadingLine(ofKind: kind, at: location) {
+                reuseUnnamedHeading(empty)
+                return
+            }
 
             // A line is one kind of heading or the other, never both: styling over
             // characters that already carry the other kind — the break at the end of a

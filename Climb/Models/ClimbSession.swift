@@ -54,8 +54,9 @@ final class ClimbSession {
         return title.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "New Session"
     }
 
-    /// The rest of the document, collapsed to one line for the list row.
-    var previewText: String {
+    /// Everything written below the title, collapsed to one line — nil for a note that
+    /// is nothing but its title, so a caller can say what it likes about an empty one.
+    var bodyPreview: String? {
         var seenTitle = false
         var remainder: [String] = []
         for line in lines {
@@ -67,9 +68,12 @@ final class ClimbSession {
             if !trimmed.isEmpty { remainder.append(trimmed) }
         }
         let joined = remainder.joined(separator: " ")
-        if joined.isEmpty {
-            return attempts.isEmpty ? "No additional text" : "\(attempts.count) attempt\(attempts.count == 1 ? "" : "s")"
-        }
-        return joined
+        return joined.isEmpty ? nil : joined
+    }
+
+    /// The rest of the document, collapsed to one line for the list row.
+    var previewText: String {
+        if let bodyPreview { return bodyPreview }
+        return attempts.isEmpty ? "No additional text" : "\(attempts.count) attempt\(attempts.count == 1 ? "" : "s")"
     }
 }
