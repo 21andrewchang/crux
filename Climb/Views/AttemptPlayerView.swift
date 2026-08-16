@@ -76,6 +76,9 @@ struct AttemptPlayerView<Footer: View>: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
             .animation(.smooth(duration: 0.3), value: isEditingNotes)
+            // The pop-up rides the same morph as the editing row; animating on the
+            // stamp (not the ticking clock) means one move per note, in and out.
+            .animation(.smooth(duration: 0.3), value: passingNote?.stamp)
         }
         // Rides in the top bar's row, filling the empty trailing slot the bar leaves
         // opposite its ✕ — same size, same margins, so the two read as one row.
@@ -209,6 +212,9 @@ struct AttemptPlayerView<Footer: View>: View {
             if isEditingNotes {
                 noteRow
                     .padding(.top, 12)
+            } else if let passing = passingNote {
+                passingNoteRow(passing)
+                    .padding(.top, 12)
             }
 
             HStack(spacing: 12) {
@@ -242,6 +248,38 @@ struct AttemptPlayerView<Footer: View>: View {
             TextField("Notes...", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
                 .focused($notesFocused)
+        }
+    }
+
+    /// The note playback is passing: pops up a beat before its moment and lingers a
+    /// beat after, so the words are on screen while the moment happens. Playback only —
+    /// scrubbing across bookmarks would make the row flap — and the editing row, when
+    /// open, owns the slot.
+    private var passingNote: (stamp: TimeInterval, words: String)? {
+        guard isPlaying, !isEditingNotes else { return nil }
+        var best: (stamp: TimeInterval, words: String)?
+        for line in notes.components(separatedBy: "\n") {
+            guard let stamp = NoteTimestamp.timestamps(in: line).first,
+                  currentTime >= stamp - 1.0, currentTime <= stamp + 1.5 else { continue }
+            // Windows can overlap when notes sit close; the upcoming note takes over
+            // from the lingering one.
+            if best == nil || stamp > best!.stamp {
+                best = (stamp, strippingClock(line))
+            }
+        }
+        return best
+    }
+
+    /// The editing row's read-only twin — same clock, same seat above the bar — shown
+    /// while playback passes the note. Not focusable: it's a caption, not a field.
+    private func passingNoteRow(_ note: (stamp: TimeInterval, words: String)) -> some View {
+        HStack(spacing: 10) {
+            Text(NoteTimestamp.display(for: note.stamp))
+                .font(.body)
+                .foregroundStyle(.secondary)
+            Text(note.words)
+                .lineLimit(3)
+            Spacer(minLength: 0)
         }
     }
 

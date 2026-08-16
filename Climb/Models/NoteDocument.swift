@@ -13,6 +13,56 @@ protocol MarkerAttachment: AnyObject {
 enum NoteDocument {
     static let attachmentMarker = "\u{FFFC}"
 
+    /// Marks a line as a climb heading — the coloured bubble the attempts below it are
+    /// filed under. An attribute on the line's characters, like `noteQuote`: UIKit
+    /// carries it through typing and undo, and `applyStyles` keeps it line-shaped.
+    static let climbHeader = NSAttributedString.Key("climbHeader")
+
+    /// Prefixes a heading's line in the stored `bodyText` — the heading is nothing but
+    /// text, so this sentinel is all that survives a round trip.
+    static let headingMarker = "\u{FFF9}"
+
+    /// Marks a line as a section heading — a plain subheader the lines below it group
+    /// under. A climb heading is the special, tinted kind of section: the two are
+    /// peers, never nested, and either one ends the group above it.
+    static let sectionHeader = NSAttributedString.Key("climbSectionHeader")
+
+    /// Prefixes a section heading's line in `bodyText`, the way `headingMarker`
+    /// does a climb heading's.
+    static let sectionMarker = "\u{FFFA}"
+
+    /// Marks a heading's line as folded: everything under it, down to the next
+    /// heading of either kind, is styled away to nothing. An attribute on the line's
+    /// characters so it rides through editing like `noteQuote` does — but display
+    /// only, never serialized, so a reopened note starts unfolded.
+    static let foldedHeading = NSAttributedString.Key("climbFoldedHeading")
+
+    static let headerFont = UIFont.systemFont(ofSize: 16, weight: .semibold)
+
+    /// Trailing room held open on a climb heading's line for the attempt count drawn
+    /// between the bubble and the fold chevron.
+    static let countReserve: CGFloat = 72
+
+    /// The name reads in the climb's colour; the bubble behind it is drawn by the
+    /// layout fragment, which inflates around this line — the spacing above and below
+    /// is its breathing room.
+    static func headerAttributes(tint: UIColor) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacingBefore = 18
+        paragraph.paragraphSpacing = 10
+        paragraph.firstLineHeadIndent = textIndent
+        paragraph.headIndent = textIndent
+        // Stops short of the trailing edge, where the attempt count and the fold
+        // chevron live.
+        paragraph.tailIndent = -(textIndent + chevronReserve + countReserve)
+        return [
+            .font: headerFont,
+            .foregroundColor: tint,
+            .paragraphStyle: paragraph,
+            climbHeader: true,
+        ]
+    }
+
     /// Ties a run of text to the attempt whose notes it is.
     ///
     /// It is an attribute on the characters, not a rule about which line sits where:
@@ -126,6 +176,31 @@ enum NoteDocument {
         ]
     }
 
+    /// Trailing room held open on a heading's line for the fold chevron drawn at its
+    /// right edge.
+    static let chevronReserve: CGFloat = 28
+
+    static let sectionFont = UIFont.systemFont(ofSize: 22, weight: .bold)
+
+    /// A section heading: bigger and heavier than body, well short of the title —
+    /// a subheader. The text on the line *is* the section's name.
+    static var sectionHeaderAttributes: [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        // Extra room above, little below: the heading belongs to what follows it,
+        // same as a climb heading's spacing.
+        paragraph.paragraphSpacingBefore = 18
+        paragraph.paragraphSpacing = 6
+        // Flush left, like the title: the subheader hangs at the margin while the
+        // body text under it keeps its indent.
+        paragraph.tailIndent = -(textIndent + chevronReserve)
+        return [
+            .font: sectionFont,
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: paragraph,
+            sectionHeader: true,
+        ]
+    }
+
     static var bodyAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
@@ -153,21 +228,49 @@ enum NoteDocument {
 
     /// Rebuilds the editable document, substituting a live attachment at each marker.
     ///
-    /// A marker whose ID no longer resolves — a climb retired from the library, say —
-    /// is dropped along with its ID, so the two never drift out of alignment.
-    static func attributedString(for session: ClimbSession, makeAttachment: (UUID) -> NSTextAttachment?) -> NSAttributedString {
+    /// A marker whose ID no longer resolves is dropped along with its ID, so the two
+    /// never drift out of alignment. A marker that `climbName` resolves instead is a
+    /// legacy stored-climb heading: its name comes in as an inline heading line, and
+    /// the ID is gone on the next save.
+    static func attributedString(for session: ClimbSession,
+                                 climbName: (UUID) -> String? = { _ in nil },
+                                 makeAttachment: (UUID) -> NSTextAttachment?) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var idIndex = 0
+        var headingStarts: [Int] = []
+        var sectionStarts: [Int] = []
 
         for character in session.bodyText {
             if String(character) == attachmentMarker {
                 guard idIndex < session.attachmentIDs.count else { continue }
                 let id = session.attachmentIDs[idIndex]
                 idIndex += 1
-                guard let attachment = makeAttachment(id) else { continue }
-                result.append(NSAttributedString(attachment: attachment))
+                if let attachment = makeAttachment(id) {
+                    result.append(NSAttributedString(attachment: attachment))
+                } else if let name = climbName(id) {
+                    headingStarts.append(result.length)
+                    result.append(NSAttributedString(string: name))
+                }
+            } else if String(character) == headingMarker {
+                headingStarts.append(result.length)
+            } else if String(character) == sectionMarker {
+                sectionStarts.append(result.length)
             } else {
                 result.append(NSAttributedString(string: String(character)))
+            }
+        }
+
+        let text = result.string as NSString
+        for start in headingStarts where start < result.length {
+            let line = text.lineRange(for: NSRange(location: start, length: 0))
+            if line.length > 0 {
+                result.addAttribute(climbHeader, value: true, range: line)
+            }
+        }
+        for start in sectionStarts where start < result.length {
+            let line = text.lineRange(for: NSRange(location: start, length: 0))
+            if line.length > 0 {
+                result.addAttribute(sectionHeader, value: true, range: line)
             }
         }
 
@@ -225,8 +328,8 @@ enum NoteDocument {
         }
     }
 
-    /// The line after a row — unless that line is another row, in which case there is
-    /// nowhere for the notes to sit.
+    /// The line after a row — unless that line is another row or a climb heading, in
+    /// which case there is nowhere for the notes to sit.
     static func quoteLine(after line: NSRange, in storage: NSAttributedString) -> NSRange? {
         let start = NSMaxRange(line)
         guard start < storage.length else { return nil }
@@ -239,11 +342,20 @@ enum NoteDocument {
                 stop.pointee = true
             }
         }
+        for key in [climbHeader, sectionHeader] {
+            storage.enumerateAttribute(key, in: quote) { value, _, stop in
+                if value != nil {
+                    isBlock = true
+                    stop.pointee = true
+                }
+            }
+        }
         return isBlock ? nil : quote
     }
 
     /// Flattens the editor's contents back to storage, recovering attachment order
     /// from the document itself so edits and deletions need no separate bookkeeping.
+    /// Heading lines go out behind their sentinel — it is the only trace they leave.
     static func serialize(_ attributed: NSAttributedString) -> (text: String, ids: [UUID]) {
         var text = ""
         var ids: [UUID] = []
@@ -257,21 +369,47 @@ enum NoteDocument {
                 text += attributed.attributedSubstring(from: range).string
             }
         }
-        return (text, ids)
+
+        // The built text runs index-for-index with the attributed string — markers and
+        // attachments are one character each — so the heading line starts map straight
+        // across. Inserted back to front so earlier positions stay true.
+        let string = attributed.string as NSString
+        var sentinels: [(start: Int, marker: String)] = []
+        for (key, marker) in [(climbHeader, headingMarker), (sectionHeader, sectionMarker)] {
+            attributed.enumerateAttribute(key, in: full) { value, range, _ in
+                guard value != nil else { return }
+                var location = string.lineRange(for: NSRange(location: range.location, length: 0)).location
+                while location < NSMaxRange(range) {
+                    let line = string.lineRange(for: NSRange(location: location, length: 0))
+                    // One sentinel per line, the climb kind winning if both attributes
+                    // somehow land on one line.
+                    if !sentinels.contains(where: { $0.start == line.location }) {
+                        sentinels.append((line.location, marker))
+                    }
+                    location = NSMaxRange(line)
+                }
+            }
+        }
+        let out = NSMutableString(string: text)
+        for sentinel in sentinels.sorted(by: { $0.start > $1.start }) {
+            out.insert(sentinel.marker, at: sentinel.start)
+        }
+        return (out as String, ids)
     }
 
     /// A row draws its own height exactly; the body's line and paragraph spacing on top
     /// of that just reads as slack above and below it, so its line gets none.
-    static var blockAttributes: [NSAttributedString.Key: Any] {
+    static func blockAttributes() -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 0
         paragraph.paragraphSpacing = 0
+        paragraph.paragraphSpacingBefore = 0
         return [.paragraphStyle: paragraph]
     }
 
-    /// Restyles in place: first line as title, remainder as body, rows tight, and the
-    /// notes bound to a row as a quote. Attribute-only edits, so the selection and any
-    /// attachments are left untouched.
+    /// Restyles in place: first line as title, remainder as body, rows tight, heading
+    /// lines as tinted bubbles, and the notes bound to a row as a quote. Attribute-only
+    /// edits, so the selection and any attachments are left untouched.
     ///
     /// The quote bindings are read first and written back last. They are never derived
     /// away: a run that is bound stays bound, whatever the editing did to the lines
@@ -282,20 +420,50 @@ enum NoteDocument {
 
         let text = storage.string as NSString
 
-        // Every block line in order, which is what gives each attempt a region for its
-        // notes: from the line under its row down to wherever the next block starts.
-        var blocks: [(line: NSRange, id: UUID, takesNotes: Bool)] = []
+        // Heading lines, read before the wipe. Line-shaped like the quotes: any
+        // character carrying the attribute makes its whole line a heading.
+        func lines(carrying key: NSAttributedString.Key) -> [NSRange] {
+            var found: [NSRange] = []
+            storage.enumerateAttribute(key, in: full) { value, range, _ in
+                guard value != nil else { return }
+                var location = text.lineRange(for: NSRange(location: range.location, length: 0)).location
+                while location < NSMaxRange(range) {
+                    let line = text.lineRange(for: NSRange(location: location, length: 0))
+                    if found.last != line { found.append(line) }
+                    location = NSMaxRange(line)
+                }
+            }
+            return found
+        }
+        let headings = lines(carrying: climbHeader)
+        let sections = lines(carrying: sectionHeader)
+
+        // Folded heading lines, also read before the wipe — kept only where the line
+        // still is a heading of either kind, so a fold cannot outlive its chevron.
+        let folds = lines(carrying: foldedHeading)
+            .filter { line in headings.contains(line) || sections.contains(line) }
+
+        // Every block line in order — attachment rows and heading lines both — which is
+        // what gives each attempt a region for its notes: from the line under its row
+        // down to wherever the next block starts. Headings carry no id: nothing binds
+        // to them, they only end the group above.
+        var blocks: [(line: NSRange, id: UUID?, takesNotes: Bool)] = []
         storage.enumerateAttribute(.attachment, in: full) { value, range, _ in
             guard let marker = value as? MarkerAttachment else { return }
             blocks.append((text.lineRange(for: range), marker.markerID, marker.takesNotes))
         }
+        for line in headings + sections {
+            blocks.append((line, nil, false))
+        }
+        blocks.sort { $0.line.location < $1.line.location }
 
         var regions: [UUID: NSRange] = [:]
         for (index, block) in blocks.enumerated() where block.takesNotes {
+            guard let id = block.id else { continue }
             let start = NSMaxRange(block.line)
             let end = index + 1 < blocks.count ? blocks[index + 1].line.location : storage.length
             guard start < end else { continue }
-            regions[block.id] = NSRange(location: start, length: end - start)
+            regions[id] = NSRange(location: start, length: end - start)
         }
 
         // A binding only means anything where it sits. Notes that have drifted out from
@@ -362,11 +530,14 @@ enum NoteDocument {
         // Re-derived below from what the text now says, so an edited token never
         // keeps a stale time or a stale tint.
         storage.removeAttribute(noteTimestamp, range: full)
+        // Rewritten below from the fold list, so a fold that leaked onto body text —
+        // or whose heading stopped being one — dies here rather than lingering.
+        storage.removeAttribute(foldedHeading, range: full)
         storage.addAttributes(bodyAttributes, range: full)
         let firstLine = text.lineRange(for: NSRange(location: 0, length: 0))
         storage.addAttributes(titleAttributes, range: firstLine)
-        for block in blocks {
-            storage.addAttributes(blockAttributes, range: block.line)
+        for block in blocks where block.id != nil {
+            storage.addAttributes(blockAttributes(), range: block.line)
         }
         for quote in quotes {
             storage.addAttributes(quoteAttributes(for: quote.id), range: quote.range)
@@ -374,7 +545,68 @@ enum NoteDocument {
         for quote in quotes {
             styleQuoteLines(in: storage, range: quote.range, id: quote.id)
         }
+        // Headings last, tinted from what the line now says — this is what recolours
+        // the bubble as a colour word is typed into it.
+        for line in headings {
+            let name = text.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
+            storage.addAttributes(headerAttributes(tint: ClimbTint.color(for: name)), range: line)
+        }
+        for line in sections {
+            storage.addAttributes(sectionHeaderAttributes, range: line)
+        }
+
+        // Folding, last, over everything above: a folded heading's group — attempt
+        // rows, quotes, stray body lines — draws at hairline size in clear, down to
+        // the next heading of either kind. The rows are told directly, since their
+        // height comes from their view provider and not from any attribute.
+        // Timestamps come off the hidden lines so no bookmark is drawn beside text
+        // that isn't there; they re-derive on the next restyle.
+        storage.enumerateAttribute(.attachment, in: full) { value, _, _ in
+            guard let attempt = value as? AttemptAttachment else { return }
+            attempt.isCollapsed = false
+            attempt.rowView?.isHidden = false
+        }
+        let sectionLines = sections.sorted { $0.location < $1.location }
+        let headingLines = (headings + sections).sorted { $0.location < $1.location }
+        for line in folds {
+            storage.addAttribute(foldedHeading, value: true, range: line)
+            let start = NSMaxRange(line)
+            // Climbs nest under sections: a folded section swallows everything down
+            // to the next section, climb headings included. A folded climb hides
+            // only its own group — to the next heading of either kind.
+            let boundaries = sections.contains(line) ? sectionLines : headingLines
+            let end = boundaries.first(where: { $0.location >= start })?.location ?? storage.length
+            guard start < end else { continue }
+            let region = NSRange(location: start, length: end - start)
+            storage.addAttributes([.font: UIFont.systemFont(ofSize: 0.1),
+                                   .foregroundColor: UIColor.clear,
+                                   .paragraphStyle: foldedParagraph], range: region)
+            storage.removeAttribute(noteTimestamp, range: region)
+            storage.enumerateAttribute(.attachment, in: region) { value, _, _ in
+                guard let attempt = value as? AttemptAttachment else { return }
+                attempt.isCollapsed = true
+                attempt.rowView?.isHidden = true
+            }
+        }
         storage.endEditing()
+    }
+
+    /// No spacing anywhere: a folded line's only height is its hairline font.
+    private static let foldedParagraph: NSParagraphStyle = {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 0
+        paragraph.paragraphSpacing = 0
+        paragraph.paragraphSpacingBefore = 0
+        return paragraph
+    }()
+
+    /// Whether the line at `location` is a folded heading's.
+    static func isFolded(lineAt location: Int, in storage: NSAttributedString) -> Bool {
+        guard storage.length > 0 else { return false }
+        let line = (storage.string as NSString)
+            .lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+        guard line.length > 0 else { return false }
+        return storage.attribute(foldedHeading, at: line.location, effectiveRange: nil) != nil
     }
 
     /// What each attempt's notes currently read as in the document.

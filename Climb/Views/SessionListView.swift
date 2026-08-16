@@ -4,7 +4,7 @@ import SwiftData
 /// The notes list: one row per session, newest first.
 struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \ClimbSession.updatedAt, order: .reverse) private var sessions: [ClimbSession]
+    @Query(sort: \ClimbSession.createdAt, order: .reverse) private var sessions: [ClimbSession]
     @State private var newSession: ClimbSession?
     @State private var searchText = ""
 
@@ -20,7 +20,7 @@ struct SessionListView: View {
     private var weeks: [SessionWeek] {
         let calendar = Calendar.current
         let byWeek = Dictionary(grouping: visibleSessions) { session in
-            calendar.dateInterval(of: .weekOfYear, for: session.updatedAt)?.start ?? session.updatedAt
+            calendar.dateInterval(of: .weekOfYear, for: session.createdAt)?.start ?? session.createdAt
         }
         return byWeek.keys.sorted(by: >).map { start in
             SessionWeek(id: start,
@@ -95,7 +95,7 @@ struct SessionListView: View {
                 .font(.headline)
                 .lineLimit(1)
             HStack(spacing: 6) {
-                Text(session.updatedAt.formatted(date: .abbreviated, time: .omitted))
+                Text(session.createdAt.formatted(date: .abbreviated, time: .omitted))
                     .foregroundStyle(.secondary)
                 Text(session.previewText)
                     .foregroundStyle(.tertiary)

@@ -1,155 +1,88 @@
 import UIKit
 
-/// Everything the inline climb heading draws, snapshotted so the attachment view never
-/// reaches back into SwiftData while laying out.
-struct ClimbSnapshot {
-    var name: String
-    /// Every go ever taken on this climb, not just the ones in this note.
-    var attemptCount: Int
-}
+/// Draws the bubble behind a climb heading line: a tinted pill hugging the name, the
+/// same chip the old heading row drew — but the name is now just text in the note,
+/// edited in place like anything else.
+///
+/// Drawn inside the fragment's own rendering pass rather than as a view positioned
+/// over the text, so whatever moves the text carries the bubble with it.
+final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
+    /// The heading's text, breaks trimmed — measured for the pill's width and already
+    /// reflected in `tint` by whoever vended the fragment.
+    var name: String = ""
+    var tint: UIColor = ClimbTint.fallback
+    /// A climb heading folds like a section: chevron at the trailing edge, group
+    /// hidden under it while folded.
+    var isFolded = false
+    var containerWidth: CGFloat = 0
+    /// Attempts recorded under this heading in the note — drawn plain at the line's
+    /// trailing edge, "0 attempts" included, so a fresh bubble reads as one too.
+    var attemptCount = 0
 
-/// A text attachment standing for a climb heading in the note. Same view-provider
-/// mechanism as `AttemptAttachment`, but it reads as a section header: the attempts
-/// recorded underneath it belong to this climb.
-final class ClimbAttachment: NSTextAttachment, MarkerAttachment {
-    let climbID: UUID
-    var snapshotProvider: ((UUID) -> ClimbSnapshot?)?
-    var onTap: ((UUID) -> Void)?
-    /// The row currently on screen for this attachment, so a count change can reach it
-    /// without rebuilding the document.
-    weak var rowView: ClimbRowView?
+    /// How far the pill swells past the text on each side.
+    private static let inflate: CGFloat = 5
 
-    var markerID: UUID { climbID }
-    var takesNotes: Bool { false }
+    private static let countAttributes: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: 13),
+        .foregroundColor: UIColor.secondaryLabel,
+    ]
 
-    static let rowHeight: CGFloat = 52
-
-    init(climbID: UUID) {
-        self.climbID = climbID
-        super.init(data: nil, ofType: nil)
-        allowsTextAttachmentView = true
+    private var countText: NSString {
+        (attemptCount == 1 ? "1 attempt" : "\(attemptCount) attempts") as NSString
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewProvider(for parentView: UIView?,
-                               location: any NSTextLocation,
-                               textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
-        let provider = ClimbRowViewProvider(textAttachment: self,
-                                            parentView: parentView,
-                                            textLayoutManager: textContainer?.textLayoutManager,
-                                            location: location)
-        provider.tracksTextAttachmentViewBounds = true
-        return provider
+    /// Right-aligned against the chevron, centred on the bubble's line.
+    private func countRect(before chevron: CGRect) -> CGRect {
+        let size = countText.size(withAttributes: Self.countAttributes)
+        let midY = textLineFragments.first.map(\.typographicBounds.midY)
+            ?? layoutFragmentFrame.height / 2
+        return CGRect(x: chevron.minX - 8 - size.width,
+                      y: midY - size.height / 2,
+                      width: size.width, height: size.height)
     }
-}
 
-final class ClimbRowViewProvider: NSTextAttachmentViewProvider {
-    override func loadView() {
-        let row = ClimbRowView()
-        if let attachment = textAttachment as? ClimbAttachment {
-            let id = attachment.climbID
-            if let snapshot = attachment.snapshotProvider?(id) {
-                row.configure(with: snapshot)
-            }
-            row.onTap = { [weak attachment] in attachment?.onTap?(id) }
-            attachment.rowView = row
+    private var pillRect: CGRect {
+        guard let line = textLineFragments.first else { return .null }
+        let bounds = line.typographicBounds
+        // An empty bubble — just dropped, nothing typed — still shows a caret's worth
+        // of room to type into.
+        let textWidth = name.isEmpty
+            ? 22
+            : ceil((name as NSString).size(withAttributes: [.font: NoteDocument.headerFont]).width)
+        return CGRect(x: -layoutFragmentFrame.minX,
+                      y: bounds.minY - Self.inflate,
+                      width: textWidth + NoteDocument.textIndent * 2,
+                      height: bounds.height + Self.inflate * 2)
+    }
+
+    override var renderingSurfaceBounds: CGRect {
+        let icon = HeadingChevron.icon(folded: isFolded)
+        let chevron = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
+        return super.renderingSurfaceBounds
+            .union(pillRect)
+            .union(chevron)
+            .union(countRect(before: chevron))
+    }
+
+    override func draw(at point: CGPoint, in context: CGContext) {
+        let rect = pillRect
+        UIGraphicsPushContext(context)
+        if !rect.isNull {
+            let path = UIBezierPath(roundedRect: rect.offsetBy(dx: point.x, dy: point.y),
+                                    cornerRadius: rect.height / 2)
+            // Same recipe as the old chip: a fill that carries the colour without
+            // shouting it, under text drawn in the colour itself.
+            tint.withAlphaComponent(0.22).setFill()
+            path.fill()
         }
-        view = row
-    }
-
-    override func attachmentBounds(for attributes: [NSAttributedString.Key: Any],
-                                   location: any NSTextLocation,
-                                   textContainer: NSTextContainer?,
-                                   proposedLineFragment: CGRect,
-                                   position: CGPoint) -> CGRect {
-        let padding = (textContainer?.lineFragmentPadding ?? 0) * 2
-        let available = (textContainer?.size.width ?? proposedLineFragment.width) - padding
-        let width = max(120, min(available, proposedLineFragment.width))
-        return CGRect(x: 0, y: 0, width: width, height: ClimbAttachment.rowHeight)
-    }
-}
-
-/// The heading itself: the name as a tinted tag on the left, the attempt count plain on
-/// the right. Gym problems are named by hold colour — "Blue V4", "pink slab" — so the
-/// tag picks that colour up, and the note becomes scannable by colour alone.
-final class ClimbRowView: UIView {
-    var onTap: (() -> Void)?
-
-    private let nameTag = UIView()
-    private let nameLabel = UILabel()
-    private let summaryLabel = UILabel()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .clear
-        buildHierarchy()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private func buildHierarchy() {
-        nameTag.layer.cornerCurve = .continuous
-        nameTag.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(nameTag)
-
-        nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        nameTag.addSubview(nameLabel)
-
-        summaryLabel.font = .systemFont(ofSize: 13)
-        summaryLabel.textColor = .secondaryLabel
-        summaryLabel.textAlignment = .right
-        // The tag gets the room; the count is short and never truncates.
-        summaryLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        summaryLabel.setContentHuggingPriority(.required, for: .horizontal)
-        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(summaryLabel)
-
-        NSLayoutConstraint.activate([
-            // Extra room above, little below: the heading belongs to what follows it.
-            nameTag.leadingAnchor.constraint(equalTo: leadingAnchor),
-            nameTag.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-
-            nameLabel.leadingAnchor.constraint(equalTo: nameTag.leadingAnchor, constant: 11),
-            nameLabel.trailingAnchor.constraint(equalTo: nameTag.trailingAnchor, constant: -11),
-            nameLabel.topAnchor.constraint(equalTo: nameTag.topAnchor, constant: 5),
-            nameLabel.bottomAnchor.constraint(equalTo: nameTag.bottomAnchor, constant: -5),
-
-            summaryLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameTag.trailingAnchor, constant: 10),
-            summaryLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            summaryLabel.centerYAnchor.constraint(equalTo: nameTag.centerYAnchor),
-        ])
-
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        nameTag.layer.cornerRadius = nameTag.bounds.height / 2
-    }
-
-    /// Only the tag itself is interactive. The rest of the row — the gap beside it, the
-    /// count, the space above and below — falls through to the text view, so tapping
-    /// around the heading puts the caret there instead of opening the climb.
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard nameTag.frame.contains(point) else { return nil }
-        return super.hitTest(point, with: event)
-    }
-
-    @objc private func handleTap() {
-        onTap?()
-    }
-
-    func configure(with snapshot: ClimbSnapshot) {
-        nameLabel.text = snapshot.name
-        let count = snapshot.attemptCount
-        summaryLabel.text = count == 1 ? "1 attempt" : "\(count) attempts"
-
-        // Tinted fill, tinted text: a chip that carries the colour without shouting it.
-        let tint = ClimbTint.color(for: snapshot.name)
-        nameTag.backgroundColor = tint.withAlphaComponent(0.22)
-        nameLabel.textColor = tint
+        let icon = HeadingChevron.icon(folded: isFolded)
+        let iconRect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
+        icon.draw(at: CGPoint(x: point.x + iconRect.minX, y: point.y + iconRect.minY))
+        let count = countRect(before: iconRect)
+        countText.draw(at: CGPoint(x: point.x + count.minX, y: point.y + count.minY),
+                       withAttributes: Self.countAttributes)
+        UIGraphicsPopContext()
+        super.draw(at: point, in: context)
     }
 }
 

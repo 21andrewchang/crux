@@ -9,8 +9,8 @@ struct SessionDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
-    /// The whole library — the editor resolves climb markers against it, and it is
-    /// small enough that a query beats a fetch per attachment.
+    /// Only consulted for notes saved before climbs became plain text: an old stored
+    /// climb's marker resolves to its name and comes back as an inline bubble.
     @Query private var climbs: [Climb]
 
     @State private var editorController = NoteEditorController()
@@ -22,8 +22,6 @@ struct SessionDetailView: View {
     @State private var editedAttemptID: UUID?
     /// Where the opened attempt's player starts — set by tapping a timestamp in the note.
     @State private var openedAttemptStart: TimeInterval?
-    @State private var openedClimbID: UUID?
-    @State private var isPickingClimb = false
     @State private var isEditing = false
     /// Times the swap between the parked system bar and the keyboard bar.
     @State private var barPark = BarParkModel()
@@ -40,8 +38,10 @@ struct SessionDetailView: View {
             session: session,
             controller: editorController,
             onStartAttempt: startAttempt,
-            onAddClimb: { isPickingClimb = true },
+            onAddClimb: { editorController.insertClimbHeader() },
+            onAddSection: { editorController.insertSectionHeader() },
             stopwatch: stopwatch,
+            barPark: barPark,
             onOpenAttempt: {
                 openedAttemptStart = nil
                 openedAttemptID = $0
@@ -52,16 +52,22 @@ struct SessionDetailView: View {
                 openedAttemptID = id
                 editedAttemptID = id
             },
-            climbSnapshot: snapshot(forClimb:),
-            onOpenClimb: { openedClimbID = $0 },
+            legacyClimbName: { id in climbs.first { $0.id == id }?.name },
             onConfirmDelete: { count in
                 doomedRowCount = count
                 isConfirmingRowDelete = true
             },
             onChange: saveChanges,
-            onFocusChange: { isEditing = $0 }
+            onFocusChange: { focused in
+                isEditing = focused
+                // The keyboard can come back without the will-change notification
+                // arriving in a useful order — dismissing the attempt sheet hands
+                // focus straight back — so the bar swap keys off focus too.
+                if focused { barPark.lift() }
+            }
         )
         .background(Color.black)
+        .background(BarParkAnchor(model: barPark))
         .ignoresSafeArea(.container, edges: .vertical)
         // The note runs edge to edge under the bars; a black fade at each end
         // keeps the status bar and the bottom bar legible over the text.
@@ -112,20 +118,24 @@ struct SessionDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             keyboardHeight = max(0, UIScreen.main.bounds.maxY - frame.minY)
-            // The bar swap, timed to the keyboard: rising (only for the note's
-            // own keyboard, not a sheet's) hides the parked items this instant;
-            // dismissing snaps them back on just before the sliding bar lands.
+            // The bar swap: rising (only for the note's own keyboard, not a
+            // sheet's) hides the parked items this instant and starts tracking
+            // the clone's position; the swap back fires off where the clone
+            // actually is mid-slide, with the duration only as a backstop.
             let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
             if keyboardHeight > 0 {
                 if isEditing { barPark.lift() }
             } else {
-                barPark.parkAfter(duration)
+                barPark.parkBy(duration)
             }
         }
         // Without this, the bottom bar would dodge the keyboard and briefly float
         // over it during focus transitions; the accessory already covers that case.
         .ignoresSafeArea(.keyboard)
-        .onDisappear(perform: discardDetachedAttempts)
+        .onDisappear {
+            barPark.restore()
+            discardDetachedAttempts()
+        }
         // No date in the top bar — it lives in the note itself, above the title.
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -151,41 +161,45 @@ struct SessionDetailView: View {
             // Parked bar: real system bottom bar items, which is what buys the
             // Notes push transition — the search field morphs into these. The
             // system bar cannot ride the keyboard (SwiftUI re-pins its chrome
-            // every frame), so while editing these bow out and the keyboard
-            // accessory clone in NoteEditor takes over at the same metrics.
-            // `barPark` (not `isEditing`) times the swap to the keyboard motion.
-            if barPark.parked {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button("Add Climb", systemImage: "plus") { isPickingClimb = true }
-                        .dampedToolbarMorph()
-                    Button("Record Attempt", systemImage: "video.fill", action: startAttempt)
-                        .dampedToolbarMorph()
+            // every frame), so while editing the keyboard accessory clone in
+            // NoteEditor takes over at the same metrics. The items stay in the
+            // toolbar permanently; `barPark` snaps the bar's chrome view
+            // invisible/visible in step with the keyboard, because removing
+            // items would replay the system's insertion animation every time.
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button("Add Climb", systemImage: "plus") { editorController.insertClimbHeader() }
+                    .dampedToolbarMorph()
+                Button("Add Section", systemImage: "list.dash.header.rectangle") {
+                    editorController.insertSectionHeader()
                 }
-                ToolbarSpacer(.flexible, placement: .bottomBar)
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if !stopwatch.hasStarted {
-                        // Tapping the idle disc offers the three durations in the
-                        // floating menu — the system menu is far too wide for them.
-                        Button("Timer", systemImage: "timer") {
-                            withAnimation(.smooth(duration: 0.35)) { stopwatch.isChoosing.toggle() }
-                        }
-                        .dampedToolbarMorph()
-                    } else {
-                        Button {
-                            withAnimation(.smooth(duration: 0.35)) { stopwatch.toggle() }
-                        } label: {
-                            StopwatchFace(stopwatch: stopwatch)
-                        }
-                        .dampedToolbarMorph()
-                        Button("Reset", systemImage: "xmark") {
-                            withAnimation(.smooth(duration: 0.35)) { stopwatch.reset() }
-                        }
-                        // xmark fills its bounds edge to edge, so at the bar's default
-                        // size it reads bigger than the transport glyphs; a few points
-                        // down looks optically matched to the 19pt pause/play.
-                        .font(.system(size: 14, weight: .semibold))
-                        .dampedToolbarMorph()
+                .dampedToolbarMorph()
+                Button("Record Attempt", systemImage: "video.fill", action: startAttempt)
+                    .dampedToolbarMorph()
+            }
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+            ToolbarItemGroup(placement: .bottomBar) {
+                if !stopwatch.hasStarted {
+                    // Tapping the idle disc offers the three durations in the
+                    // floating menu — the system menu is far too wide for them.
+                    Button("Timer", systemImage: "timer") {
+                        withAnimation(.smooth(duration: 0.35)) { stopwatch.isChoosing.toggle() }
                     }
+                    .dampedToolbarMorph()
+                } else {
+                    Button {
+                        withAnimation(.smooth(duration: 0.35)) { stopwatch.toggle() }
+                    } label: {
+                        StopwatchFace(stopwatch: stopwatch)
+                    }
+                    .dampedToolbarMorph()
+                    Button("Reset", systemImage: "xmark") {
+                        withAnimation(.smooth(duration: 0.35)) { stopwatch.reset() }
+                    }
+                    // xmark fills its bounds edge to edge, so at the bar's default
+                    // size it reads bigger than the transport glyphs; a few points
+                    // down looks optically matched to the 19pt pause/play.
+                    .font(.system(size: 14, weight: .semibold))
+                    .dampedToolbarMorph()
                 }
             }
         }
@@ -212,27 +226,12 @@ struct SessionDetailView: View {
             AttemptFlowView(
                 attemptID: id,
                 ordinal: editorController.nextAttemptOrdinal(),
-                // The climb this attempt will land under — same lookup finishAttempt
-                // uses — so the recording page is headed like the replay page.
-                climbName: editorController.currentClimbID().flatMap(climb(with:))?.name,
+                // The heading this attempt will land under, so the recording page is
+                // headed like the replay page.
+                climbName: editorController.currentClimbName(),
                 onFinish: { finishAttempt(id: id, captured: $0) },
                 onCancel: { pendingAttemptID = nil }
             )
-        }
-        .sheet(isPresented: $isPickingClimb) {
-            ClimbPickerView(onPick: addClimb)
-        }
-        .sheet(item: $openedClimbID, onDismiss: syncEditedClimb) { id in
-            if let climb = climb(with: id) {
-                ClimbDetailView(climb: climb) {
-                    openedClimbID = nil
-                }
-                // Live, not on dismissal: the heading is visible behind the sheet and
-                // should read the new name as it is typed.
-                .onChange(of: climb.name) {
-                    editorController.refreshRows()
-                }
-            }
         }
         // A native sheet, so dragging the page around comes from the system. On dismiss
         // rather than on Done: the note has to come back showing what the page ended up
@@ -249,30 +248,6 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: Climbs
-
-    private func climb(with id: UUID) -> Climb? {
-        climbs.first { $0.id == id }
-    }
-
-    /// Runs however the climb sheet goes away — X or swipe — so the note never comes
-    /// back showing a stale name.
-    private func syncEditedClimb() {
-        saveChanges()
-        editorController.refreshRows()
-    }
-
-    private func snapshot(forClimb id: UUID) -> ClimbSnapshot? {
-        climb(with: id).map { ClimbSnapshot(name: $0.name, attemptCount: $0.attempts.count) }
-    }
-
-    /// Drops a heading into the note. Everything recorded below it is filed against
-    /// this climb until the next heading.
-    private func addClimb(_ climb: Climb) {
-        editorController.insertClimb(id: climb.id)
-        saveChanges()
-    }
-
     // MARK: Attempt lifecycle
 
     private func startAttempt() {
@@ -282,15 +257,9 @@ struct SessionDetailView: View {
     /// The attempt joins the session first, then the row is inserted — the inline view
     /// reads its data straight out of the session as it lays out.
     private func finishAttempt(id: UUID, captured: CapturedAttempt) {
-        // Read before inserting: the cursor is still where the row is about to land,
-        // so this is the heading the user is typing under.
-        let activeClimb = editorController.currentClimbID().flatMap(climb(with:))
-
         let attempt = Attempt(id: id)
-        attempt.climb = activeClimb
         attempt.videoFilename = captured.videoFilename
         attempt.thumbnailFilename = captured.thumbnailFilename
-        attempt.depthFilename = captured.depthFilename
         attempt.videoDuration = captured.duration
         attempt.restSeconds = captured.restSeconds
         attempt.notes = captured.notes
@@ -302,7 +271,20 @@ struct SessionDetailView: View {
         // Inserting rebuilds the rows, which also refreshes the heading's now-stale
         // "7 attempts · 3 sessions" line and renumbers the group.
         editorController.insertAttempt(id: id)
+        // Land the user typing on the new line under the row, keyboard and bar up,
+        // as the sheet slides away. UIKit only restores the keyboard by itself when
+        // the note was being edited at present time — asking makes it every time.
+        editorController.focus()
         saveChanges()
+
+        // The rest began when the recording stopped, so the 2-minute countdown is
+        // backdated by the rest already spent on the review screen. If the whole
+        // window went to reviewing, there's nothing left to count down.
+        if captured.restSeconds < 120 {
+            withAnimation(.smooth(duration: 0.35)) {
+                stopwatch.start(120, from: Date(timeIntervalSinceNow: -captured.restSeconds))
+            }
+        }
     }
 
     /// Notes written in the sheet are on the attempt already; this is what puts them

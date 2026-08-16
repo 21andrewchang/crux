@@ -24,6 +24,9 @@ final class AttemptAttachment: NSTextAttachment, MarkerAttachment {
     /// The row currently on screen for this attachment, so a renumber can reach it
     /// without rebuilding the document.
     weak var rowView: AttemptRowView?
+    /// Folded away under a collapsed climb heading: the row hides and its line shrinks
+    /// to a hairline. Kept current by `NoteDocument.applyStyles` from document order.
+    var isCollapsed = false
 
     var markerID: UUID { attemptID }
     var takesNotes: Bool { true }
@@ -59,6 +62,7 @@ final class AttemptRowViewProvider: NSTextAttachmentViewProvider {
                 row.configure(with: snapshot)
             }
             row.onTap = { [weak attachment] in attachment?.onTap?(id) }
+            row.isHidden = attachment.isCollapsed
             attachment.rowView = row
         }
         view = row
@@ -73,7 +77,9 @@ final class AttemptRowViewProvider: NSTextAttachmentViewProvider {
         let padding = (textContainer?.lineFragmentPadding ?? 0) * 2
         let available = (textContainer?.size.width ?? proposedLineFragment.width) - padding
         let width = max(120, min(available, proposedLineFragment.width))
-        return CGRect(x: 0, y: 0, width: width, height: AttemptAttachment.rowHeight)
+        // Under a collapsed heading the row keeps its place in the text but no height.
+        let collapsed = (textAttachment as? AttemptAttachment)?.isCollapsed == true
+        return CGRect(x: 0, y: 0, width: width, height: collapsed ? 0.1 : AttemptAttachment.rowHeight)
     }
 }
 
@@ -99,8 +105,8 @@ final class AttemptRowView: UIView {
         // The row reads as one bubble: a near-black card holding the title on the
         // left and the video on the right, the video tucked inside the bubble's
         // edges like a thumbnail in a list cell.
-        // A shade past systemGray6: barely off black, just enough to read as a card.
-        container.backgroundColor = UIColor(white: 0.07, alpha: 1)
+        // Barely off black — just enough separation from the page to read as a card.
+        container.backgroundColor = UIColor(white: 0.04, alpha: 1)
         container.layer.cornerRadius = 14
         container.layer.cornerCurve = .continuous
         container.translatesAutoresizingMaskIntoConstraints = false

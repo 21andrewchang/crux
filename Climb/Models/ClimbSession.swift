@@ -42,6 +42,9 @@ final class ClimbSession {
     private var lines: [Substring] {
         bodyText
             .replacingOccurrences(of: NoteDocument.attachmentMarker, with: " ")
+            // Heading names read like any other line; only the sentinels go.
+            .replacingOccurrences(of: NoteDocument.headingMarker, with: "")
+            .replacingOccurrences(of: NoteDocument.sectionMarker, with: "")
             .split(separator: "\n", omittingEmptySubsequences: false)
     }
 

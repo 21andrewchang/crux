@@ -5,7 +5,6 @@ import SwiftUI
 struct CapturedAttempt {
     var videoFilename: String
     var thumbnailFilename: String?
-    var depthFilename: String?
     var duration: TimeInterval
     var restSeconds: TimeInterval
     var notes: String
@@ -23,7 +22,7 @@ struct AttemptFlowView: View {
     private enum Phase: Equatable {
         case capture
         case processing
-        case review(video: String, thumbnail: String?, depth: String?, duration: TimeInterval, restStart: Date)
+        case review(video: String, thumbnail: String?, duration: TimeInterval, restStart: Date)
     }
 
     @StateObject private var capture = CaptureController()
@@ -37,16 +36,20 @@ struct AttemptFlowView: View {
             case .processing:
                 Color.black.ignoresSafeArea()
                 ProgressView().controlSize(.large).tint(.white)
-            case let .review(video, thumbnail, depth, duration, restStart):
+            case let .review(video, thumbnail, duration, restStart):
                 AttemptReviewView(
                     ordinal: ordinal,
                     climbName: climbName,
                     videoFilename: video,
                     thumbnailFilename: thumbnail,
-                    depthFilename: depth,
                     duration: duration,
                     restStart: restStart,
                     onFinish: onFinish,
+                    onRetake: {
+                        try? FileManager.default.removeItem(
+                            at: VideoStore.directory.appendingPathComponent(video))
+                        phase = .capture
+                    },
                     onDiscard: onCancel
                 )
             }
@@ -57,8 +60,8 @@ struct AttemptFlowView: View {
         // the take, so there the ✕ (which confirms) is the only way out.
         .interactiveDismissDisabled(!(phase == .capture && capture.status != .recording))
         .task {
-            capture.onFinish = { url, depthURL, stoppedAt in
-                ingest(url: url, depthURL: depthURL, stoppedAt: stoppedAt)
+            capture.onFinish = { url, stoppedAt in
+                ingest(url: url, stoppedAt: stoppedAt)
             }
             await capture.prepare()
         }
@@ -146,7 +149,9 @@ struct AttemptFlowView: View {
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        // Matches AttemptTopBar's top padding so capture, review, and replay all
+        // hang the bar at the same height.
+        .padding(.top, 14)
     }
 
     /// The Camera app's shutter: a full liquid-glass disc with a red disc on top that
@@ -241,13 +246,12 @@ struct AttemptFlowView: View {
 
     /// Moves the recording into permanent storage and flips to review. The rest timer
     /// runs from `stoppedAt` — the moment the user hit stop, not the moment ingest ends.
-    private func ingest(url: URL, depthURL: URL?, stoppedAt: Date) {
+    private func ingest(url: URL, stoppedAt: Date) {
         Task {
-            let result = await VideoStore.ingest(recordingAt: url, depthAt: depthURL, attemptID: attemptID)
+            let result = await VideoStore.ingest(recordingAt: url, attemptID: attemptID)
             await MainActor.run {
                 phase = .review(video: result.video,
                                 thumbnail: result.thumbnail,
-                                depth: result.depth,
                                 duration: result.duration,
                                 restStart: stoppedAt)
             }
@@ -271,10 +275,10 @@ private struct AttemptReviewView: View {
     let climbName: String?
     let videoFilename: String
     let thumbnailFilename: String?
-    let depthFilename: String?
     let duration: TimeInterval
     let restStart: Date
     var onFinish: (CapturedAttempt) -> Void
+    var onRetake: () -> Void
     var onDiscard: () -> Void
 
     @State private var notes: String = ""
@@ -291,25 +295,35 @@ private struct AttemptReviewView: View {
             autoplays: true,
             controller: controller
         ) {
-            Button {
-                controller.commitDraft()
-                onFinish(CapturedAttempt(
-                    videoFilename: videoFilename,
-                    thumbnailFilename: thumbnailFilename,
-                    depthFilename: depthFilename,
-                    duration: duration,
-                    restSeconds: Date().timeIntervalSince(restStart),
-                    notes: notes
-                ))
-            } label: {
-                Text("Finish Attempt")
-                    .font(.headline)
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
+            HStack(spacing: 12) {
+                // Retake trashes this take and drops straight back to the camera —
+                // no confirmation, since asking again is the whole point of the tap.
+                Button(action: onRetake) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 19, weight: .semibold))
+                        .frame(width: 50, height: 50)
+                }
+                .buttonStyle(.glass)
+
+                Button {
+                    controller.commitDraft()
+                    onFinish(CapturedAttempt(
+                        videoFilename: videoFilename,
+                        thumbnailFilename: thumbnailFilename,
+                        duration: duration,
+                        restSeconds: Date().timeIntervalSince(restStart),
+                        notes: notes
+                    ))
+                } label: {
+                    Text("Finish Attempt")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.white)
             }
-            .buttonStyle(.glassProminent)
-            .tint(.white)
         }
         .overlay(alignment: .top) {
             AttemptTopBar(
@@ -323,10 +337,6 @@ private struct AttemptReviewView: View {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
                 try? FileManager.default.removeItem(at: videoURL)
-                if let depthFilename {
-                    try? FileManager.default.removeItem(
-                        at: VideoStore.directory.appendingPathComponent(depthFilename))
-                }
                 onDiscard()
             }
         } message: {

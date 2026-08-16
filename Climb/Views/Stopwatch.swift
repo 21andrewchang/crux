@@ -30,11 +30,16 @@ final class StopwatchModel {
     /// Kick off a fresh countdown with the picked duration, less one second so a
     /// round-minute pick opens on X:59 — showing 10:00 for a beat and then dropping
     /// to 9:59 shrinks the capsule mid-flight.
-    func start(_ duration: TimeInterval) {
+    ///
+    /// `from` backdates the start: the rest countdown after an attempt runs from the
+    /// moment the recording stopped, not the moment Finish was tapped. A backdated
+    /// start is already mid-flight, so it keeps the full duration — the X:59 trim
+    /// only applies to fresh menu picks.
+    func start(_ duration: TimeInterval, from startDate: Date? = nil) {
         isChoosing = false
-        self.duration = duration - 1
+        self.duration = startDate == nil ? duration - 1 : duration
         accumulated = 0
-        startedAt = Date()
+        startedAt = startDate ?? Date()
         isRunning = true
     }
 
@@ -66,37 +71,187 @@ final class StopwatchModel {
 }
 
 /// When the parked system bar shows, Notes-style: never a crossfade with the
-/// keyboard bar. The keyboard bar slides down with the keyboard and, just before
-/// it lands on the parked position, the system items snap on in place (and snap
-/// off the instant the keyboard starts to rise). Both flips run with animations
-/// disabled — the motion on screen is only ever the keyboard bar travelling.
-@Observable
-final class BarParkModel {
-    private(set) var parked = true
-    @ObservationIgnored private var pending: Task<Void, Never>?
+/// keyboard bar, and never a timer. The keyboard bar slides down with the
+/// keyboard, and the swap is keyed to where that bar actually is on screen: a
+/// display link reads its live (presentation-layer) position every frame, and a
+/// few points before it would land on the parked capsule both flips happen at
+/// once — clone off, system bar on — so the sliding bar can never quite reach
+/// the parked position, which is exactly how Notes does it.
+///
+/// The flips are UIKit `isHidden` toggles, not SwiftUI state changes:
+/// removing/reinserting the toolbar items makes the system play its own
+/// insertion animation no matter what the transaction says, but a hidden view
+/// is simply not drawn — instant both ways. The items themselves stay in the
+/// toolbar permanently.
+@MainActor
+final class BarParkModel: NSObject {
+    /// Anchor into the view hierarchy; the chrome is re-found through its
+    /// window on every flip, so pushes and pops can rebuild it freely.
+    weak var anchor: UIView?
+    /// The accessory clone riding the keyboard, registered by the note editor
+    /// when it builds its input accessory view.
+    weak var keyboardBar: UIView?
 
-    /// Keyboard is rising — the accessory clone takes over this instant.
-    func lift() {
-        pending?.cancel()
-        setParkedInstantly(false)
+    /// Swap this many points of travel before the clone would land on the
+    /// parked capsule — late enough to read as one bar arriving, early enough
+    /// that the clone visibly never gets there.
+    private static let lead: CGFloat = 10
+
+    private var watcher: CADisplayLink?
+    private var deadline: Task<Void, Never>?
+    /// Cached for the per-frame tick; the flips themselves re-find the chrome.
+    private weak var watchedChrome: UIView?
+    /// The trigger only arms once the clone has been seen *above* the parked
+    /// spot. On its way up it starts below (rising from offscreen with the
+    /// keyboard), and an unarmed trigger must not read that as "arrived".
+    private var armed = false
+    private var tickCount = 0
+
+    // MARK: Diagnostics — Documents/barpark.log, pulled off the device with
+    // devicectl. Rip out once the handoff is signed off.
+    private static let debugLogging = true
+    private var logHandle: FileHandle?
+
+    private func log(_ line: String) {
+        guard Self.debugLogging else { return }
+        if logHandle == nil {
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("barpark.log")
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+            logHandle = try? FileHandle(forWritingTo: url)
+        }
+        logHandle?.write(Data((line + "\n").utf8))
     }
 
-    /// Keyboard is dismissing over `duration` — snap the parked bar on just
-    /// before the sliding bar reaches it.
-    func parkAfter(_ duration: TimeInterval) {
-        pending?.cancel()
-        pending = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(duration * 0.85 * 1_000_000_000))
+    /// Keyboard is rising — the accessory clone takes over this instant, and
+    /// the watcher starts following it so any way down (animated dismiss,
+    /// interactive drag) trips the swap at the same spot.
+    func lift() {
+        deadline?.cancel()
+        armed = false
+        keyboardBar?.isHidden = false
+        watchedChrome = chrome
+        watchedChrome?.isHidden = true
+        log("lift: bar=\(keyboardBar.map(String.init(describing:)) ?? "nil") chrome=\(watchedChrome.map(String.init(describing:)) ?? "nil")")
+        startWatching()
+    }
+
+    /// Keyboard is dismissing over `duration`. The watcher does the real swap
+    /// off the bar's position; this is only a backstop for when the position
+    /// can't be read, so the chrome can never get stuck hidden.
+    func parkBy(_ duration: TimeInterval) {
+        deadline?.cancel()
+        deadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((duration + 0.05) * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            self?.setParkedInstantly(true)
+            // The keyboard can be back up by the time this fires — finishing an
+            // attempt dismisses its sheet and hands focus straight back to the
+            // note — and parking then would hide the bar the user is looking at.
+            // A live keyboard is the one thing that keeps the accessory in a
+            // window, so that's the test.
+            if self?.keyboardBar?.window != nil {
+                self?.log("park deadline skipped: keyboard up")
+                return
+            }
+            self?.log("park via deadline")
+            self?.park()
         }
     }
 
-    private func setParkedInstantly(_ value: Bool) {
-        guard parked != value else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { parked = value }
+    /// Leaving the screen: whatever state the swap was in, the bar chrome is
+    /// shared navigation furniture and must come back.
+    func restore() {
+        stopWatching()
+        deadline?.cancel()
+        keyboardBar?.isHidden = false
+        chrome?.isHidden = false
+    }
+
+    private func park() {
+        stopWatching()
+        deadline?.cancel()
+        armed = false
+        keyboardBar?.isHidden = true
+        chrome?.isHidden = false
+    }
+
+    private func startWatching() {
+        guard watcher == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)
+        watcher = link
+    }
+
+    private func stopWatching() {
+        watcher?.invalidate()
+        watcher = nil
+    }
+
+    @objc private func tick() {
+        guard let bar = keyboardBar, let window = bar.window,
+              let barTop = Self.liveScreenTop(of: bar)
+        else { return }
+        // Where the clone's top sits when its capsule lines up with the parked
+        // one, measured off the live system bar: capsule bottom 28pt above the
+        // screen bottom + 48pt capsule + the clone's own 8pt top padding. The
+        // chrome view can't anchor this — it reports a full-window frame.
+        let arrivalTop = window.bounds.height - 76 - 8
+        tickCount += 1
+        if tickCount % 10 == 0 {
+            let chromeTop = (watchedChrome ?? chrome).map { $0.convert($0.bounds, to: nil).minY }
+            log("tick bar=\(barTop) arrival=\(arrivalTop) chrome=\(String(describing: chromeTop)) armed=\(armed)")
+        }
+        // Swap `lead` points before alignment — but only descending: crossing
+        // the line on the way down, having first been above it.
+        if barTop < arrivalTop - Self.lead {
+            armed = true
+        } else if armed {
+            log("park via position: bar=\(barTop) arrival=\(arrivalTop)")
+            park()
+        }
+    }
+
+    /// Where `view` is drawn *right now*. Model frames jump to the animation's
+    /// end value the moment it starts, so the mid-slide position only exists in
+    /// the presentation tree — and it's an ancestor the keyboard animates, not
+    /// the accessory itself, so the offsets are summed up the whole layer chain.
+    private static func liveScreenTop(of view: UIView) -> CGFloat? {
+        var y: CGFloat = 0
+        var node: CALayer? = view.layer
+        while let layer = node {
+            let live = layer.presentation() ?? layer
+            y += live.frame.minY - live.bounds.minY
+            node = layer.superlayer
+        }
+        return y
+    }
+
+    private var chrome: UIView? {
+        anchor?.window.flatMap(Self.findFloatingBar(in:))
+    }
+
+    private static func findFloatingBar(in view: UIView) -> UIView? {
+        if String(describing: type(of: view)) == "FloatingBarContainerView" { return view }
+        for subview in view.subviews {
+            if let found = findFloatingBar(in: subview) { return found }
+        }
+        return nil
+    }
+}
+
+/// Invisible; its only job is giving `BarParkModel` a live window to search.
+struct BarParkAnchor: UIViewRepresentable {
+    let model: BarParkModel
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        model.anchor = view
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        model.anchor = view
     }
 }
 
@@ -154,6 +309,7 @@ struct StopwatchFace: View {
 struct EditingToolbar: View {
     var stopwatch: StopwatchModel
     var onAddClimb: () -> Void
+    var onAddSection: () -> Void
     var onStartAttempt: () -> Void
 
     var body: some View {
@@ -163,6 +319,13 @@ struct EditingToolbar: View {
                     Button(action: onAddClimb) {
                         barGlyph("plus", pointSize: 26.7083)
                             .frame(width: 54.6667, height: 48)
+                            .contentShape(.rect)
+                    }
+                    Button(action: onAddSection) {
+                        // A boxier glyph than the transport marks; a couple of points
+                        // down reads optically matched beside the 27pt plus.
+                        barGlyph("list.dash.header.rectangle", pointSize: 24)
+                            .frame(width: 58, height: 48)
                             .contentShape(.rect)
                     }
                     Button(action: onStartAttempt) {
