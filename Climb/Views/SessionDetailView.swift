@@ -25,10 +25,12 @@ struct SessionDetailView: View {
     @State private var isEditing = false
     /// Times the swap between the parked system bar and the keyboard bar.
     @State private var barPark = BarParkModel()
-    /// Tracked so the floating duration menu can sit just above the keyboard bar.
+    /// Tracked off the keyboard notifications to tell rises from dismissals.
     @State private var keyboardHeight: CGFloat = 0
     @State private var isConfirmingDelete = false
     @State private var isConfirmingRowDelete = false
+    /// Camera tapped while the rest countdown is still running.
+    @State private var isConfirmingEarlyAttempt = false
     @State private var doomedRowCount = 0
     /// Attempts whose rows have been removed but whose deletion is still undoable.
     @State private var detached: [DetachedAttempt] = []
@@ -84,37 +86,24 @@ struct SessionDetailView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
-        // The timer's duration menu floats here, over the note, rather than inside
-        // the toolbar: the keyboard accessory's frame is fixed, and growing it to
-        // fit the menu made the whole bar jump. A full-screen catcher behind it
-        // dismisses on a tap anywhere outside. Sits under the toolbar in the
-        // chain, so the bar's own buttons still get their taps first.
-        .overlay(alignment: .bottomTrailing) {
-            if stopwatch.isChoosing {
-                ZStack(alignment: .bottomTrailing) {
-                    Color.clear
-                        .contentShape(.rect)
-                        .onTapGesture {
-                            withAnimation(.smooth(duration: 0.35)) { stopwatch.isChoosing = false }
-                        }
-                    TimerDurationMenu { duration in
-                        withAnimation(.smooth(duration: 0.35)) { stopwatch.start(duration) }
-                    }
-                    .padding(.trailing, 16)
-                    // 8pt above the timer capsule, measured from the true screen
-                    // bottom. Parked: the capsule lives in the system bottom bar,
-                    // top near 86 (34 safe area + 48 capsule + 4). Editing: the
-                    // keyboard frame includes the 64pt accessory, whose capsule
-                    // top sits 8 below its top edge — so the keyboard height
-                    // itself lands the menu 8pt clear.
-                    .padding(.bottom, isEditing ? keyboardHeight : 94)
-                }
-                // Full screen regardless of any inherited safe-area context, so
-                // the paddings above mean distance from the physical bottom edge.
-                .ignoresSafeArea()
-            }
+        // The running timer's duration bubble floats here, over the note, rather
+        // than inside either bar: the keyboard accessory's frame is fixed, and
+        // the system bottom bar cannot host it. Positioned so its countdown row
+        // lands exactly on the capsule's spot — parked, the capsule top is near
+        // 86 (34 safe area + 48 capsule + 4), so its bottom is 38 from the true
+        // screen bottom; editing, the keyboard frame includes the 64pt accessory,
+        // whose capsule top sits 8 below its top edge (keyboard height − 8 − 48).
+        // Sits under the toolbar in the chain, so the bar's own buttons still get
+        // their taps first.
+        // The duration panel that grows out from behind the timer capsule —
+        // resident permanently (invisible and untouchable while closed) so the
+        // grow always animates instead of popping in pre-opened.
+        .overlay {
+            TimerBubble(
+                stopwatch: stopwatch,
+                bottomInset: isEditing ? max(38, keyboardHeight - 56) : 38
+            )
         }
-        .animation(.smooth(duration: 0.35), value: stopwatch.isChoosing)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             keyboardHeight = max(0, UIScreen.main.bounds.maxY - frame.minY)
@@ -169,7 +158,7 @@ struct SessionDetailView: View {
             ToolbarItemGroup(placement: .bottomBar) {
                 Button("Add Climb", systemImage: "plus") { editorController.insertClimbHeader() }
                     .dampedToolbarMorph()
-                Button("Add Section", systemImage: "list.dash.header.rectangle") {
+                Button("Add Section", systemImage: "textformat.size") {
                     editorController.insertSectionHeader()
                 }
                 .dampedToolbarMorph()
@@ -178,27 +167,37 @@ struct SessionDetailView: View {
             }
             ToolbarSpacer(.flexible, placement: .bottomBar)
             ToolbarItemGroup(placement: .bottomBar) {
+                // Idle: a tap stretches the disc leftward to "Rest" and opens
+                // the drawer; picking a duration there turns "Rest" into the
+                // countdown. Running: a tap grows the duration panel up from
+                // behind the countdown capsule.
                 if !stopwatch.hasStarted {
-                    // Tapping the idle disc offers the three durations in the
-                    // floating menu — the system menu is far too wide for them.
-                    Button("Timer", systemImage: "timer") {
-                        withAnimation(.smooth(duration: 0.35)) { stopwatch.isChoosing.toggle() }
+                    Button {
+                        stopwatch.toggleMenu()
+                    } label: {
+                        // "Rest" stays in the layout permanently and only its
+                        // width animates (0 ↔ natural): inserting/removing it
+                        // made the bar re-layout in a lurch, and the icon's
+                        // slide stuttered. The text itself is yanked invisible
+                        // the instant a close starts; only the width animates.
+                        HStack(spacing: 0) {
+                            Image(systemName: "timer")
+                            Text("Rest")
+                                .font(.system(size: 19, weight: .semibold))
+                                .fixedSize()
+                                .padding(.leading, 6)
+                                .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
+                                .clipped()
+                                .opacity(stopwatch.showsOptions ? 1 : 0)
+                        }
                     }
                     .dampedToolbarMorph()
                 } else {
                     Button {
-                        withAnimation(.smooth(duration: 0.35)) { stopwatch.toggle() }
+                        stopwatch.toggleMenu()
                     } label: {
                         StopwatchFace(stopwatch: stopwatch)
                     }
-                    .dampedToolbarMorph()
-                    Button("Reset", systemImage: "xmark") {
-                        withAnimation(.smooth(duration: 0.35)) { stopwatch.reset() }
-                    }
-                    // xmark fills its bounds edge to edge, so at the bar's default
-                    // size it reads bigger than the transport glyphs; a few points
-                    // down looks optically matched to the 19pt pause/play.
-                    .font(.system(size: 14, weight: .semibold))
                     .dampedToolbarMorph()
                 }
             }
@@ -218,6 +217,12 @@ struct SessionDetailView: View {
             Text(doomedRowCount == 1
                  ? "The video will not be deleted."
                  : "Their videos will not be deleted.")
+        }
+        .alert("Rest Incomplete", isPresented: $isConfirmingEarlyAttempt) {
+            Button("Cancel", role: .cancel) {}
+            Button("Yes", role: .destructive) { pendingAttemptID = UUID() }
+        } message: {
+            Text("Are you sure you want to start?")
         }
         // A sheet, same as the replay page, so recording and replaying an attempt are
         // one shape on screen. The flow decides for itself when swipe-to-dismiss is
@@ -251,7 +256,12 @@ struct SessionDetailView: View {
     // MARK: Attempt lifecycle
 
     private func startAttempt() {
-        pendingAttemptID = UUID()
+        // Mid-countdown, recording means cutting the rest short — check first.
+        if stopwatch.hasStarted, stopwatch.remaining(at: Date()) > 0 {
+            isConfirmingEarlyAttempt = true
+        } else {
+            pendingAttemptID = UUID()
+        }
     }
 
     /// The attempt joins the session first, then the row is inserted — the inline view

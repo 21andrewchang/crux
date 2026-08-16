@@ -10,8 +10,60 @@ protocol MarkerAttachment: AnyObject {
     var takesNotes: Bool { get }
 }
 
+/// A toolbar button's mark, set in the text like a character — how the seeded first
+/// note names the buttons it tells you to press. It is not a marker: nothing is filed
+/// under it and it takes no entry in `attachmentIDs`. The private-use character it
+/// stands for is all that goes to storage, so the glyph round-trips like any letter.
+final class GlyphAttachment: NSTextAttachment {
+    let character: Character
+
+    init(character: Character) {
+        self.character = character
+        super.init(data: nil, ofType: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 enum NoteDocument {
     static let attachmentMarker = "\u{FFFC}"
+
+    /// The glyphs a note can name, each as one private-use character in `bodyText`.
+    /// The names are the toolbar's own: whatever `EditingToolbar` draws, this draws.
+    static let glyphs: [Character: String] = [
+        "\u{E000}": "plus",
+        "\u{E001}": "textformat.size",
+        "\u{E002}": "video.fill",
+        "\u{E003}": "timer",
+    ]
+
+    /// What a glyph reads as where there is no room to draw it — the list row's
+    /// one-line preview, and anywhere else the note is quoted as plain text.
+    static let glyphFallbacks: [Character: String] = [
+        "\u{E000}": "+",
+        "\u{E001}": "AA",
+        "\u{E002}": "record",
+        "\u{E003}": "timer",
+    ]
+
+    /// Sized and seated on the text's own baseline, so a glyph sits in a sentence the
+    /// way a word does rather than riding above or below the line.
+    static func glyphAttachment(for character: Character) -> GlyphAttachment? {
+        guard let name = glyphs[character] else { return nil }
+        let font = UIFont.preferredFont(forTextStyle: .body)
+        let configuration = UIImage.SymbolConfiguration(font: font)
+        guard let image = UIImage(systemName: name, withConfiguration: configuration)?
+            .withTintColor(.label, renderingMode: .alwaysOriginal)
+        else { return nil }
+
+        let attachment = GlyphAttachment(character: character)
+        attachment.image = image
+        attachment.bounds = CGRect(x: 0,
+                                   y: (font.capHeight - image.size.height) / 2,
+                                   width: image.size.width,
+                                   height: image.size.height)
+        return attachment
+    }
 
     /// Marks a line as a climb heading — the coloured bubble the attempts below it are
     /// filed under. An attribute on the line's characters, like `noteQuote`: UIKit
@@ -255,6 +307,8 @@ enum NoteDocument {
                 headingStarts.append(result.length)
             } else if String(character) == sectionMarker {
                 sectionStarts.append(result.length)
+            } else if let glyph = glyphAttachment(for: character) {
+                result.append(NSAttributedString(attachment: glyph))
             } else {
                 result.append(NSAttributedString(string: String(character)))
             }
@@ -362,7 +416,11 @@ enum NoteDocument {
         let full = NSRange(location: 0, length: attributed.length)
 
         attributed.enumerateAttribute(.attachment, in: full) { value, range, _ in
-            if let attachment = value as? MarkerAttachment {
+            if let glyph = value as? GlyphAttachment {
+                // One character out for the one character in, so the sentinel
+                // positions below still map index-for-index.
+                text += String(glyph.character)
+            } else if let attachment = value as? MarkerAttachment {
                 text += attachmentMarker
                 ids.append(attachment.markerID)
             } else {

@@ -679,7 +679,12 @@ struct NoteEditor: UIViewRepresentable {
             // with pasted text flatten to spaces, the way they do in a quote.
             if text.contains("\n"), let line = headingLine(onLineAt: range.location) {
                 if text == "\n" {
-                    exitHeading(replacing: range)
+                    // Return in an empty bubble deletes the climb in place: the line
+                    // stays, plain body now, with the caret resting on it — no new
+                    // line opens.
+                    if !deleteEmptyHeadingInPlace(line) {
+                        exitHeading(replacing: range)
+                    }
                 } else {
                     let flattened = text.replacingOccurrences(of: "\n", with: " ")
                         .trimmingCharacters(in: .whitespaces)
@@ -695,9 +700,13 @@ struct NoteEditor: UIViewRepresentable {
             }
             // A section heading keeps its line whole the same way a bubble does:
             // Return steps out onto a fresh body line, pasted breaks flatten.
-            if text.contains("\n"), sectionLine(onLineAt: range.location) != nil {
+            if text.contains("\n"), let line = sectionLine(onLineAt: range.location) {
                 if text == "\n" {
-                    exitHeading(replacing: range)
+                    // An empty section header dissolves under Return the way an
+                    // empty bubble does.
+                    if !deleteEmptyHeadingInPlace(line) {
+                        exitHeading(replacing: range)
+                    }
                 } else {
                     let flattened = text.replacingOccurrences(of: "\n", with: " ")
                         .trimmingCharacters(in: .whitespaces)
@@ -735,6 +744,14 @@ struct NoteEditor: UIViewRepresentable {
             // Backspacing into a clock never nibbles at it: the token goes whole, and
             // the line goes with it once the note's words are already gone.
             if text.isEmpty, deleteTimestamp(at: range) { return false }
+            // An emptied bubble goes whole: with the name already gone, the next
+            // backspace deletes the climb's line itself.
+            if text.isEmpty, deleteEmptyHeadingLine(at: range) { return false }
+            // A bubble keeps its line whole under deletion the way a row does:
+            // deleting the break on either side would merge written text into the
+            // heading — or the name down onto it — recolouring whatever it lands on
+            // as part of the climb.
+            if text.isEmpty, mergesIntoHeadingLine(range) { return false }
             // Backspacing the break under a row would pull the next line up onto the
             // row's own line, where text cannot be that attempt's notes — or anything
             // else legible. The row is deleted by deleting the row. An empty line is
@@ -929,6 +946,69 @@ struct NoteEditor: UIViewRepresentable {
             let followingIsEmpty = following.length == 1 &&
                 string.character(at: following.location) == 0x000A
             return !followingIsEmpty
+        }
+
+        /// A bubble with no name deletes where it stands — Return or backspace both
+        /// land here. The heading dissolves back into a plain empty body line and
+        /// the caret stays on it: nothing inserted, nothing pulled up. False if the
+        /// bubble has a name.
+        private func deleteEmptyHeadingInPlace(_ line: NSRange) -> Bool {
+            guard let textView else { return false }
+            let text = textView.textStorage.string as NSString
+            guard text.substring(with: line)
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+
+            let hasBreak = line.length > 0 && text.character(at: NSMaxRange(line) - 1) == 0x000A
+            let replacement = hasBreak
+                ? NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes)
+                : NSAttributedString()
+            performBlockEdit { $0.replaceCharacters(in: line, with: replacement) }
+            textView.selectedRange = NSRange(location: min(line.location, textView.textStorage.length),
+                                             length: 0)
+            textView.typingAttributes = NoteDocument.bodyAttributes
+            return true
+        }
+
+        /// Backspace in a bubble whose name is already gone deletes the climb in
+        /// place, the same dissolve Return does. Section headings go the same way.
+        private func deleteEmptyHeadingLine(at range: NSRange) -> Bool {
+            guard range.length == 1 else { return false }
+            let caret = NSMaxRange(range)
+            guard let line = headingLine(onLineAt: caret) ?? sectionLine(onLineAt: caret) else {
+                return false
+            }
+            return deleteEmptyHeadingInPlace(line)
+        }
+
+        /// Whether this edit deletes exactly the break on one side of a heading's
+        /// line — and would merge written text into it. The heading attribute is
+        /// line-shaped, so whatever a bubble merges with becomes part of the climb;
+        /// those breaks only go when the line merging away is empty, when nothing
+        /// changes hands and the default deletion reads right.
+        private func mergesIntoHeadingLine(_ range: NSRange) -> Bool {
+            guard let storage = textView?.textStorage, range.length == 1 else { return false }
+            let string = storage.string as NSString
+            guard range.location < string.length,
+                  string.character(at: range.location) == 0x000A else { return false }
+
+            let ending = string.lineRange(for: NSRange(location: range.location, length: 0))
+            let followingStart = NSMaxRange(ending)
+            guard followingStart < string.length else { return false }
+            let following = string.lineRange(for: NSRange(location: followingStart, length: 0))
+            let isHeading: (NSRange) -> Bool = {
+                self.headingLine(onLineAt: $0.location) != nil
+                    || self.sectionLine(onLineAt: $0.location) != nil
+            }
+            let followingIsEmpty = following.length == 1 &&
+                string.character(at: following.location) == 0x000A
+
+            // The break is the bubble's own: the written line below would ride up
+            // into it. An empty bubble's break may go — that deletes the bubble.
+            if isHeading(ending), ending.length > 1, !followingIsEmpty { return true }
+            // The break ends the written line above: the bubble's name would ride
+            // up onto it.
+            if isHeading(following), ending.length > 1 { return true }
+            return false
         }
 
         private func isDirectlyUnderRow(_ line: NSRange) -> Bool {

@@ -40,7 +40,12 @@ final class ClimbSession {
     }
 
     private var lines: [Substring] {
-        bodyText
+        var text = bodyText
+        // A glyph has nowhere to draw in a list row, so it reads as its name instead.
+        for (character, fallback) in NoteDocument.glyphFallbacks {
+            text = text.replacingOccurrences(of: String(character), with: fallback)
+        }
+        return text
             .replacingOccurrences(of: NoteDocument.attachmentMarker, with: " ")
             // Heading names read like any other line; only the sentinels go.
             .replacingOccurrences(of: NoteDocument.headingMarker, with: "")

@@ -14,59 +14,55 @@ private func barGlyph(_ name: String, pointSize: CGFloat) -> Image {
 /// Countdown state behind the stopwatch item in the note's bottom bar.
 @Observable
 final class StopwatchModel {
-    private(set) var isRunning = false
     /// Countdown target; nil until a duration is picked from the menu.
     private(set) var duration: TimeInterval?
-    /// Time banked across earlier run stretches; the live stretch adds on top.
-    private var accumulated: TimeInterval = 0
     private var startedAt: Date?
 
-    /// Once started, the button shows time (running or paused) instead of the icon.
+    /// Once started, the button shows the live countdown beside the icon.
     var hasStarted: Bool { duration != nil }
 
-    /// Idle disc tapped; the floating menu is showing the duration choices.
+    /// The duration choices are showing: idle, the detached popup; running,
+    /// the panel grown out from behind the countdown capsule.
     var isChoosing = false
+    /// The running panel's rows' visibility, split from `isChoosing` because a
+    /// close must yank the row content the instant it starts — watching the
+    /// options ride the collapsing panel down read badly — while the rows
+    /// themselves animate out of the layout to give the shrink its height.
+    var showsOptions = false
+
+    func openMenu() {
+        showsOptions = true
+        withAnimation(.smooth(duration: 0.35)) { isChoosing = true }
+    }
+
+    /// Every close path funnels here: capsule re-tap, outside tap, or picking
+    /// a duration.
+    func closeMenu() {
+        showsOptions = false
+        withAnimation(.smooth(duration: 0.35)) { isChoosing = false }
+    }
+
+    func toggleMenu() {
+        isChoosing ? closeMenu() : openMenu()
+    }
 
     /// Kick off a fresh countdown with the picked duration, less one second so a
     /// round-minute pick opens on X:59 — showing 10:00 for a beat and then dropping
-    /// to 9:59 shrinks the capsule mid-flight.
+    /// to 9:59 shrinks the capsule mid-flight. Picking while one is already running
+    /// simply overrides it.
     ///
     /// `from` backdates the start: the rest countdown after an attempt runs from the
     /// moment the recording stopped, not the moment Finish was tapped. A backdated
     /// start is already mid-flight, so it keeps the full duration — the X:59 trim
     /// only applies to fresh menu picks.
     func start(_ duration: TimeInterval, from startDate: Date? = nil) {
-        isChoosing = false
         self.duration = startDate == nil ? duration - 1 : duration
-        accumulated = 0
         startedAt = startDate ?? Date()
-        isRunning = true
-    }
-
-    /// Pause → resume, one tap each.
-    func toggle() {
-        if let startedAt {
-            accumulated += Date().timeIntervalSince(startedAt)
-            self.startedAt = nil
-            isRunning = false
-        } else {
-            startedAt = Date()
-            isRunning = true
-        }
     }
 
     func remaining(at date: Date) -> TimeInterval {
-        let elapsed = accumulated + (startedAt.map { date.timeIntervalSince($0) } ?? 0)
+        let elapsed = startedAt.map { date.timeIntervalSince($0) } ?? 0
         return max(0, (duration ?? 0) - elapsed)
-    }
-
-    /// Back to the bare icon: nothing banked, nothing running. `isRunning` is left
-    /// alone on purpose — the face is animating out when this runs, and flipping it
-    /// would swap the glyph to play mid-exit. `start` sets it fresh anyway.
-    func reset() {
-        duration = nil
-        accumulated = 0
-        startedAt = nil
     }
 }
 
@@ -268,33 +264,25 @@ extension View {
     }
 }
 
-/// The started stopwatch's face — transport glyph beside the live countdown. The
+/// The started stopwatch's face — timer glyph beside the live countdown. The
 /// system bottom bar supplies the capsule around it and stretches as this resizes.
 struct StopwatchFace: View {
     var stopwatch: StopwatchModel
 
     var body: some View {
         HStack(spacing: 6) {
-            // Once running the face is a plain transport control —
-            // pause while running, play while paused.
-            let symbol = stopwatch.isRunning ? "pause.fill" : "play.fill"
-            Image(systemName: symbol)
+            Image(systemName: "timer")
                 .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(stopwatch.isRunning ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
-                // The glyph swaps instantly — only the capsule stretch animates.
-                .contentTransition(.identity)
-                .animation(nil, value: symbol)
+                .foregroundStyle(.secondary)
             // Half-second ticks keep whole-second digits honest without
-            // a per-frame timeline. Paused, the value freezes and dims.
+            // a per-frame timeline.
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 Text(stopwatch.remaining(at: context.date).clockString)
-                    .font(.system(size: 17, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 19, weight: .semibold).monospacedDigit())
             }
             // TimelineView greedily fills the width it's offered;
             // pin it to the text's own size so the capsule hugs.
             .fixedSize()
-            .opacity(stopwatch.isRunning ? 1 : 0.5)
-            .transition(.opacity)
         }
     }
 }
@@ -322,9 +310,9 @@ struct EditingToolbar: View {
                             .contentShape(.rect)
                     }
                     Button(action: onAddSection) {
-                        // A boxier glyph than the transport marks; a couple of points
+                        // A wider glyph than the transport marks; a couple of points
                         // down reads optically matched beside the 27pt plus.
-                        barGlyph("list.dash.header.rectangle", pointSize: 24)
+                        barGlyph("textformat.size", pointSize: 24)
                             .frame(width: 58, height: 48)
                             .contentShape(.rect)
                     }
@@ -347,39 +335,39 @@ struct EditingToolbar: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Same states as the parked stopwatch item: idle disc, or the running face
-    /// with a reset target on its trailing edge.
+    /// Same states as the parked stopwatch item: idle disc, or the running
+    /// face. Either way the button never moves — a tap just toggles the
+    /// detached duration popup; picking a duration is what stretches this
+    /// capsule leftward as the countdown appears.
     private var stopwatchCapsule: some View {
-        HStack(spacing: 0) {
+        Button {
+            stopwatch.toggleMenu()
+        } label: {
             if !stopwatch.hasStarted {
-                Button {
-                    withAnimation(.smooth(duration: 0.35)) { stopwatch.isChoosing.toggle() }
-                } label: {
+                // The stretch that announces the drawer: "Rest" sits where the
+                // countdown will once a duration is picked. It stays in the
+                // layout permanently with only its width animating — insertion
+                // made the icon's slide stutter — and is yanked invisible the
+                // instant a close starts.
+                HStack(spacing: 0) {
                     barGlyph("timer", pointSize: 26.9583)
                         .frame(width: 48, height: 48)
-                        .contentShape(.rect)
+                    Text("Rest")
+                        .font(.system(size: 19, weight: .semibold))
+                        .fixedSize()
+                        .padding(.trailing, 14)
+                        .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
+                        .clipped()
+                        .opacity(stopwatch.showsOptions ? 1 : 0)
                 }
+                .frame(height: 48)
+                .contentShape(.rect)
             } else {
-                Button {
-                    withAnimation(.smooth(duration: 0.35)) { stopwatch.toggle() }
-                } label: {
-                    StopwatchFace(stopwatch: stopwatch)
-                        .padding(.leading, 12)
-                        .frame(minWidth: 48)
-                        .frame(height: 48)
-                        .contentShape(.rect)
-                }
-                Button {
-                    withAnimation(.smooth(duration: 0.35)) { stopwatch.reset() }
-                } label: {
-                    // Mirrors the parked bar's reset, which is declared at
-                    // 14pt semibold against the same 19pt transport glyphs.
-                    Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 44, height: 48)
-                        .contentShape(.rect)
-                }
-                .transition(.opacity)
+                StopwatchFace(stopwatch: stopwatch)
+                    .padding(.horizontal, 14)
+                    .frame(minWidth: 48)
+                    .frame(height: 48)
+                    .contentShape(.rect)
             }
         }
         .buttonStyle(.plain)
@@ -389,30 +377,92 @@ struct EditingToolbar: View {
     }
 }
 
-/// Narrow vertical list of the three durations — a stand-in for the system menu,
-/// which imposes a huge minimum width. Hosted by the session view, floating over
-/// everything, so the bottom bar never has to make room for it.
-struct TimerDurationMenu: View {
-    var start: (TimeInterval) -> Void
+/// The timer capsule's duration panel, grown up from **behind** the real bar
+/// button — idle (where the capsule first stretches leftward to say "Rest") and
+/// running alike. The capsule in the bar keeps receiving every tap (open and
+/// close both) while this panel is pure backdrop: glass whose bottom 48pt sits
+/// behind the capsule, sized by an invisible twin of the capsule's current face
+/// so the widths match, with the choices stacking above. Opening therefore
+/// reads as the button's own glass growing upward, with nothing swapped and
+/// nothing restyled. Hosted full-screen and permanently by the session view, so
+/// the grow always animates and the tap-anywhere-outside catcher comes with it;
+/// hit-testing is off entirely while closed.
+struct TimerBubble: View {
+    var stopwatch: StopwatchModel
+    /// Distance from the physical screen bottom up to the capsule's bottom edge.
+    var bottomInset: CGFloat
 
     var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Color.clear
+                .contentShape(.rect)
+                .onTapGesture { stopwatch.closeMenu() }
+                .allowsHitTesting(stopwatch.isChoosing)
+            panel
+                // Both bars park the capsule 28pt from the trailing edge.
+                .padding(.trailing, 28)
+                .padding(.bottom, bottomInset)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach([10, 5, 2], id: \.self) { minutes in
-                Button {
-                    start(TimeInterval(minutes * 60))
-                } label: {
-                    Text("\(minutes):00")
-                        .font(.system(size: 17, weight: .semibold).monospacedDigit())
-                        .padding(.horizontal, 20)
-                        .frame(height: 44)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
+            if stopwatch.isChoosing {
+                ForEach([10, 5, 2], id: \.self) { minutes in
+                    Button {
+                        withAnimation(.smooth(duration: 0.35)) {
+                            stopwatch.start(TimeInterval(minutes * 60))
+                        }
+                        stopwatch.closeMenu()
+                    } label: {
+                        Text("\(minutes):00")
+                            .font(.system(size: 17, weight: .semibold).monospacedDigit())
+                            .padding(.horizontal, 14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(height: 44)
+                            .contentShape(.rect)
+                    }
+                }
+                // Yanked invisible the instant a close starts (`showsOptions`
+                // flips with no animation), so the shrink animates over empty
+                // glass instead of sliding the options down through it.
+                .opacity(stopwatch.showsOptions ? 1 : 0)
+                .transition(.identity)
+            }
+            // Invisible twin of the capsule's content, at the capsule's own
+            // insets: it gives the panel the capsule's width and reserves the
+            // 48pt the real button draws over.
+            Group {
+                if stopwatch.hasStarted {
+                    StopwatchFace(stopwatch: stopwatch)
+                        .padding(.horizontal, 14)
+                        .frame(minWidth: 48)
+                } else {
+                    HStack(spacing: 0) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 48)
+                        Text("Rest")
+                            .font(.system(size: 19, weight: .semibold))
+                            .fixedSize()
+                            .padding(.trailing, 14)
+                            .frame(width: stopwatch.isChoosing ? nil : 0, alignment: .leading)
+                            .clipped()
+                    }
+                    .frame(minWidth: 48)
                 }
             }
+            .frame(height: 48)
+            .opacity(0)
         }
-        .frame(width: 110)
+        .fixedSize(horizontal: true, vertical: false)
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 26))
-        .transition(.scale(scale: 0.1, anchor: .bottomTrailing).combined(with: .opacity))
+        // At the collapsed 48pt height, radius 24 *is* the capsule, so the
+        // shape stays continuous with the button it hides behind.
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        .opacity(stopwatch.isChoosing ? 1 : 0)
+        .allowsHitTesting(stopwatch.isChoosing)
     }
 }
+

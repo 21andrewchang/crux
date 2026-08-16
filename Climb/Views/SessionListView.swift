@@ -15,11 +15,17 @@ struct SessionListView: View {
         return sessions.filter { $0.bodyText.localizedCaseInsensitiveContains(query) }
     }
 
+    /// The seeded guide, pinned to the top in a card of its own — it belongs to no
+    /// week, so it is held out of the grouping below and shows no date.
+    private var pinned: ClimbSession? {
+        visibleSessions.first { $0.id == Tutorial.id }
+    }
+
     /// One card per calendar week, newest first. Sessions keep the query's newest-first
     /// order inside each week because `Dictionary(grouping:)` preserves input order.
     private var weeks: [SessionWeek] {
         let calendar = Calendar.current
-        let byWeek = Dictionary(grouping: visibleSessions) { session in
+        let byWeek = Dictionary(grouping: visibleSessions.filter { $0.id != Tutorial.id }) { session in
             calendar.dateInterval(of: .weekOfYear, for: session.createdAt)?.start ?? session.createdAt
         }
         return byWeek.keys.sorted(by: >).map { start in
@@ -55,6 +61,7 @@ struct SessionListView: View {
             .navigationDestination(item: $newSession) { session in
                 SessionDetailView(session: session)
             }
+            .task { Tutorial.seedIfNeeded(into: modelContext) }
         }
     }
 
@@ -64,6 +71,21 @@ struct SessionListView: View {
     /// behind, `secondarySystemGroupedBackground` for the card.
     private var list: some View {
         List {
+            if let pinned {
+                Section {
+                    // A one-row `ForEach` so the card swipes to delete like any other:
+                    // the guide is an ordinary note, pinned but not protected.
+                    ForEach([pinned]) { session in
+                        NavigationLink {
+                            SessionDetailView(session: session)
+                        } label: {
+                            row(for: session, showsDate: false)
+                        }
+                    }
+                    .onDelete { delete($0, from: [pinned]) }
+                    .listRowSeparator(.hidden)
+                }
+            }
             ForEach(weeks) { week in
                 Section {
                     ForEach(week.sessions) { session in
@@ -89,19 +111,22 @@ struct SessionListView: View {
         .listStyle(.insetGrouped)
     }
 
-    private func row(for session: ClimbSession) -> some View {
+    private func row(for session: ClimbSession, showsDate: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(session.displayTitle)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 6) {
-                Text(session.createdAt.formatted(date: .abbreviated, time: .omitted))
-                    .foregroundStyle(.secondary)
-                Text(session.previewText)
-                    .foregroundStyle(.tertiary)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(session.displayTitle)
+                    .font(.headline)
                     .lineLimit(1)
+                if showsDate {
+                    Text(session.createdAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                        .font(.subheadline)
+                        .foregroundStyle(.quaternary)
+                }
             }
-            .font(.subheadline)
+            Text(session.previewText)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .padding(.vertical, 4)
     }
