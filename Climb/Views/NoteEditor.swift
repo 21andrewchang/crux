@@ -148,6 +148,10 @@ struct NoteEditor: UIViewRepresentable {
         // Deliberately does not push text back into the view: the text view is the
         // source of truth while editing, and reassigning would fight the cursor.
         context.coordinator.parent = self
+        // Every step but the last is read back out of the document on the edit that
+        // completes it; the rest step ends on a tap in the bar, with the note left
+        // exactly as it was. So the line on screen is brought up to date here too.
+        context.coordinator.refreshHintIfNeeded()
     }
 
     func makeCoordinator() -> Coordinator {
@@ -446,6 +450,17 @@ struct NoteEditor: UIViewRepresentable {
             hintTop?.constant = textView.textContainerInset.top + titleLineHeight
         }
 
+        /// Shows whatever the walkthrough is asking for now, if that is not already what
+        /// is on screen. For the steps that end without the document changing — there is
+        /// one, the rest panel — where nothing else would come back through here.
+        func refreshHintIfNeeded() {
+            let asked = parent.guide.isRunning
+                ? Asked(step: parent.guide.step, needsName: parent.guide.needsName)
+                : nil
+            guard asked != shownStep else { return }
+            updatePlaceholder()
+        }
+
         /// Puts the walkthrough's line where the note's next line would be. Split from
         /// `updatePlaceholder` so a resize can place it again without re-reading the
         /// document — and because the first placement happens before the view has a
@@ -679,6 +694,8 @@ struct NoteEditor: UIViewRepresentable {
                     : NoteDocument.hintText([NoteDocument.hints[asked.step.rawValue - 1]])
             case .attempt:
                 NoteDocument.hintText([NoteDocument.hints[asked.step.rawValue - 1]])
+            case .rest:
+                NoteDocument.restText
             case .done:
                 NSAttributedString()
             }
@@ -695,12 +712,16 @@ struct NoteEditor: UIViewRepresentable {
             let full = NSRange(location: 0, length: storage.length)
             let text = storage.string as NSString
 
-            func heading(_ key: NSAttributedString.Key) -> TutorialGuide.Heading {
+            // The walkthrough asks for a name and waits for that name: anything else in
+            // the heading is still an unnamed heading as far as the step is concerned,
+            // so the instruction stays up rather than the step passing on a typo.
+            func heading(_ key: NSAttributedString.Key, named wanted: String) -> TutorialGuide.Heading {
                 var found = TutorialGuide.Heading.missing
                 storage.enumerateAttribute(key, in: full) { value, range, stop in
                     guard value != nil else { return }
                     let line = text.lineRange(for: NSRange(location: range.location, length: 0))
-                    guard !NoteDocument.headingName(text.substring(with: line)).isEmpty else {
+                    guard NoteDocument.headingName(text.substring(with: line))
+                        .caseInsensitiveCompare(wanted) == .orderedSame else {
                         found = .unnamed
                         return
                     }
@@ -719,9 +740,12 @@ struct NoteEditor: UIViewRepresentable {
             }
 
             let title = text.substring(with: text.lineRange(for: NSRange(location: 0, length: 0)))
-            parent.guide.update(hasTitle: !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                                section: heading(NoteDocument.sectionHeader),
-                                climb: heading(NoteDocument.climbHeader),
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            parent.guide.update(hasTitle: title.caseInsensitiveCompare(NoteDocument.workoutName) == .orderedSame,
+                                section: heading(NoteDocument.sectionHeader,
+                                                 named: NoteDocument.sectionPlaceholder),
+                                climb: heading(NoteDocument.climbHeader,
+                                               named: NoteDocument.climbPlaceholder),
                                 hasAttempt: hasAttempt)
         }
 
@@ -1090,19 +1114,27 @@ struct NoteEditor: UIViewRepresentable {
             let string = storage.string as NSString
 
             // Give the row its own line — it lays out as a block, not an inline glyph.
+            let breakPiece = NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes)
             let needsLeadingBreak = location > 0 && string.character(at: location - 1) != 0x000A
             let piece = NSMutableAttributedString()
             if needsLeadingBreak {
-                piece.append(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes))
+                piece.append(breakPiece)
             }
             piece.append(NSAttributedString(attachment: attachment))
-            piece.append(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes))
 
+            // The caret is left at the end of the attempt itself — the row, or the last
+            // of the notes that came with it. Nothing is opened under it: an empty line
+            // nobody asked for is an empty line to delete.
             var caret = location + piece.length
-            if let quote {
+            if let quote, quote.length > 0 {
+                piece.append(breakPiece)
                 piece.append(quote)
                 caret = location + piece.length
-                piece.append(NSAttributedString(string: "\n", attributes: NoteDocument.bodyAttributes))
+            }
+            // A break after it only if the note carries on: at the end of the note the
+            // row ends the document, and the line under it is one that was never added.
+            if location < storage.length, string.character(at: location) != 0x000A {
+                piece.append(breakPiece)
             }
 
             performBlockEdit {
@@ -1653,6 +1685,47 @@ struct NoteEditor: UIViewRepresentable {
 
         fileprivate func prepareFoldHaptic() { foldHaptic.prepare() }
 
+        /// Whether the character at `location` is inside a collapsed group — folded
+        /// text keeps its characters but draws at a hairline font, which is what makes
+        /// a caret parked in there peek out as a sliver.
+        private func isFoldHidden(_ location: Int, in storage: NSTextStorage,
+                                  effective: UnsafeMutablePointer<NSRange>? = nil,
+                                  within: NSRange? = nil) -> Bool {
+            guard location >= 0, location < storage.length else { return false }
+            let limit = within ?? NSRange(location: 0, length: storage.length)
+            let font = effective.map {
+                storage.attribute(.font, at: location, longestEffectiveRange: $0, in: limit) as? UIFont
+            } ?? (storage.attribute(.font, at: location, effectiveRange: nil) as? UIFont)
+            guard let font else { return false }
+            return font.pointSize < 1
+        }
+
+        /// Where a caret at `location` belongs if the fold has swallowed it: the first
+        /// character past the collapsed group — the line drawn under the heading — or,
+        /// when the group runs to the end of the note, the end of the heading line
+        /// above it. nil when the caret is somewhere visible and should stay put.
+        fileprivate func visibleLocation(forCaretAt location: Int) -> Int? {
+            guard let storage = textView?.textStorage, storage.length > 0,
+                  isFoldHidden(location, in: storage) else { return nil }
+
+            var run = NSRange(location: 0, length: 0)
+            var forward = location
+            while forward < storage.length {
+                let tail = NSRange(location: forward, length: storage.length - forward)
+                guard isFoldHidden(forward, in: storage, effective: &run, within: tail) else { return forward }
+                forward = NSMaxRange(run)
+            }
+
+            // Nothing visible below: back out to the heading the group hangs off.
+            var start = location
+            while start > 0 {
+                let head = NSRange(location: 0, length: start)
+                guard isFoldHidden(start - 1, in: storage, effective: &run, within: head) else { break }
+                start = run.location
+            }
+            return max(start - 1, 0)
+        }
+
         /// Folds the group under a heading down to just the heading, or unfolds it.
         /// A restyle, not an edit: the text is untouched, so nothing is persisted and
         /// nothing lands on the undo stack — and a reopened note starts unfolded.
@@ -1661,6 +1734,13 @@ struct NoteEditor: UIViewRepresentable {
             let storage = textView.textStorage
             let folded = storage.attribute(NoteDocument.foldedHeading, at: line.location,
                                            effectiveRange: nil) != nil
+
+            // Collapsing takes the keyboard with it: a caret left inside the group
+            // keeps its insertion point in text that is now hairline-tall and clear,
+            // and draws as a sliver of a cursor against the heading. Nothing under a
+            // fold is editable, so the document gives up focus rather than hold a
+            // caret somewhere invisible.
+            if !folded { textView.resignFirstResponder() }
 
             isRestyling = true
             let selected = textView.selectedRange
@@ -1677,7 +1757,11 @@ struct NoteEditor: UIViewRepresentable {
             } else {
                 restyle()
             }
-            textView.selectedRange = NSRange(location: min(selected.location, storage.length), length: 0)
+            // A caret the fold has just swallowed comes out below the group, the same
+            // place a tap on a collapsed heading would put it — so refocusing later
+            // lands somewhere visible instead of inside the fold.
+            let caret = min(selected.location, storage.length)
+            textView.selectedRange = NSRange(location: visibleLocation(forCaretAt: caret) ?? caret, length: 0)
             isRestyling = false
             syncTypingAttributes()
 
@@ -1727,6 +1811,16 @@ struct NoteEditor: UIViewRepresentable {
         /// aimed, and the page stays where they left it.
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isRestyling else { return }
+            // A tap over a collapsed group lands the caret in text that is drawn at
+            // hairline size, so what shows is a sliver of a cursor wedged into the
+            // fold. There is nothing to edit in there: the caret comes out the far
+            // side, onto the first line the fold leaves visible.
+            if textView.selectedRange.length == 0,
+               let visible = visibleLocation(forCaretAt: textView.selectedRange.location) {
+                isRestyling = true
+                textView.selectedRange = NSRange(location: visible, length: 0)
+                isRestyling = false
+            }
             syncTypingAttributes()
             // Cheap insurance for the walkthrough's line: its place is measured off
             // the laid-out text, and a tap is the first thing to happen after a note

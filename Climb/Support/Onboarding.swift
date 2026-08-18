@@ -8,7 +8,7 @@ import Observation
 /// and inside the quiz the question itself. Only `isComplete` is behind them for good.
 @Observable
 final class Onboarding {
-    enum Phase: String { case quiz, tutorial, paywall, done }
+    enum Phase: String { case quiz, loading, tutorial, paywall, done }
 
     static let shared = Onboarding()
 
@@ -66,7 +66,10 @@ final class Onboarding {
         if !Self.showsPaywall, phase == .paywall { phase = .done }
     }
 
-    func finishQuiz() { phase = .tutorial }
+    /// Out of the quiz into the beat where the answers are made something of.
+    func finishQuiz() { phase = .loading }
+
+    func finishLoading() { phase = .tutorial }
 
     /// Back out of the walkthrough into the quiz — onto its last question, which is the
     /// screen you just came off. The index is left where the quiz ended for exactly

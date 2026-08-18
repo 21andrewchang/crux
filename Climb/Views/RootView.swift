@@ -14,6 +14,8 @@ struct RootView: View {
             switch onboarding.phase {
             case .quiz:
                 QuizView(onFinish: onboarding.finishQuiz)
+            case .loading:
+                LoadingView(onFinish: onboarding.finishLoading)
             case .tutorial, .paywall:
                 // The walkthrough is the seeded note itself, opened on its own — there
                 // is no list behind it to go back to. It stays up under the paywall so
@@ -93,7 +95,7 @@ private struct TutorialHost: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             let complete = onboarding.tutorialComplete
-            Button(complete ? "Done" : "Skip") { leave() }
+            Button(complete ? "Done" : "Skip Tutorial") { leave() }
                 .fontWeight(complete ? .semibold : .regular)
         }
     }

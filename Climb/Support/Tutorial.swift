@@ -21,6 +21,12 @@ enum Tutorial {
     /// says what a name looks like (see `TutorialGuide`).
     static let bodyText = ""
 
+    /// Set the first time the rest panel is opened. The walkthrough's last step is the
+    /// one thing the note cannot record — the panel is a tap in the bar, not a mark in
+    /// the document — so it is remembered here instead, or reopening the note would ask
+    /// for it again.
+    static let restKey = "didOpenTutorialRest"
+
     /// Set the first time the walkthrough's last step lands. Not what stops it running
     /// — the note itself is the only thing that decides that — only a record that this
     /// copy has been used, so the seeder stops treating its title as one of its own.
@@ -79,6 +85,7 @@ enum Tutorial {
         let defaults = UserDefaults.standard
         defaults.set(false, forKey: seededKey)
         defaults.set(false, forKey: finishedKey)
+        defaults.set(false, forKey: restKey)
 
         let existing = (try? context.fetch(FetchDescriptor<ClimbSession>())) ?? []
         for note in existing where note.id == id {
@@ -100,11 +107,15 @@ enum Tutorial {
 /// Which also means it is never anywhere the note doesn't say it is: delete the climb
 /// and the walkthrough is back to asking for one, empty the note and it is back at the
 /// beginning. Nothing is remembered but the note itself.
+///
+/// All but the last step, which leaves nothing behind in the note at all: opening the
+/// rest panel is a tap and only a tap. That one is written down (`Tutorial.restKey`),
+/// so it is asked for once and never again.
 @Observable
 final class TutorialGuide {
     /// What the note is missing, in the order it is asked for. `done` is also every
     /// other note in the app: nothing hidden, nothing prompted.
-    enum Step: Int { case title, section, climb, attempt, done }
+    enum Step: Int { case title, section, climb, attempt, rest, done }
 
     /// How far along a heading the note is: never pressed, pressed but still empty,
     /// or written in. The middle one is a step of its own — the button has been found
@@ -116,6 +127,12 @@ final class TutorialGuide {
 
     /// The step's ask is a name, not a button press.
     private(set) var needsName = false
+
+    /// How far through the walkthrough the note is, counting the halves: pressing the
+    /// button and then naming what it made are two asks answered, not one, and this
+    /// climbs by one for each. Whatever watches it can tell being carried forward from
+    /// being walked back, without knowing what the asks are.
+    var reached: Int { step.rawValue * 2 + (needsName ? 1 : 0) }
 
     /// Whether this note is the one the walkthrough follows at all. Every other note
     /// in the app is left alone: full bar, no instructions, nothing to re-read on an
@@ -133,10 +150,10 @@ final class TutorialGuide {
     var isSectionUnlocked: Bool { step.rawValue >= Step.section.rawValue }
     var isClimbUnlocked: Bool { step.rawValue >= Step.climb.rawValue }
     var isAttemptUnlocked: Bool { step.rawValue >= Step.attempt.rawValue }
-    /// The rest timer is the one thing the walkthrough never asks for: it starts
-    /// itself the moment the first attempt is recorded, which is also the moment the
-    /// walkthrough ends. Dark until then.
-    var isRestUnlocked: Bool { step == .done }
+    /// The rest timer is the one button that has already done something before it is
+    /// pressed: it starts itself the moment the first attempt is recorded, which is the
+    /// moment the walkthrough turns to it. Dark until then.
+    var isRestUnlocked: Bool { step.rawValue >= Step.rest.rawValue }
 
     /// Barely a glyph: enough to see the bar has more in it, not enough to reach for.
     /// One number for both bars, and the reason every locked button is held back by
@@ -150,10 +167,26 @@ final class TutorialGuide {
     /// this is that look, held on purpose instead of by accident.
     static let lockedOpacity: Double = 0.055
 
+    /// Whether the rest panel has been opened at least once. The last step's only
+    /// record — see the note on the class.
+    private var didOpenRest = UserDefaults.standard.bool(forKey: Tutorial.restKey)
+
     init(session: ClimbSession) {
         let tracks = session.id == Tutorial.id
         tracksNote = tracks
         step = tracks ? .title : .done
+    }
+
+    /// The rest panel opened. Ends the walkthrough if it was what was being asked for,
+    /// and is remembered either way, so emptying the note out and starting over does not
+    /// ask for this one a second time.
+    func restOpened() {
+        guard tracksNote, !didOpenRest else { return }
+        didOpenRest = true
+        UserDefaults.standard.set(true, forKey: Tutorial.restKey)
+        guard step == .rest else { return }
+        step = .done
+        Onboarding.shared.tutorialComplete = true
     }
 
     /// Re-read from the document on every edit. The step follows what the note says
@@ -164,13 +197,15 @@ final class TutorialGuide {
         step = !hasTitle ? .title
             : section != .named ? .section
             : climb != .named ? .climb
-            : !hasAttempt ? .attempt : .done
+            : !hasAttempt ? .attempt
+            : !didOpenRest ? .rest : .done
         needsName = step == .section && section == .unnamed
             || step == .climb && climb == .unnamed
         // Noted the first time the note is whole — not to stop the walkthrough, which
         // is free to come back if the note is emptied again, but so the seeder knows
-        // this note has been lived in and leaves its title alone.
-        if step == .done { UserDefaults.standard.set(true, forKey: Tutorial.finishedKey) }
+        // this note has been lived in and leaves its title alone. Read off the note
+        // alone: the rest panel is a step past everything the note can hold.
+        if hasAttempt { UserDefaults.standard.set(true, forKey: Tutorial.finishedKey) }
         // Onboarding's corner word follows the same reading of the note: Skip until
         // every part of the bar has been used, Done after — and back to Skip if the
         // note is emptied out again.

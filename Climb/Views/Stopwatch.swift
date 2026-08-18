@@ -113,10 +113,16 @@ final class BottomBarModel {
 
     /// Physical-bottom inset up to the timer capsule's bottom edge: parked,
     /// the capsule bottom lands at 28 (the system bar's own metric); editing,
-    /// the keyboard frame includes the 64pt accessory, whose capsule bottom
-    /// is 8 + 48 below its top edge.
+    /// it hangs off the reported keyboard frame.
+    ///
+    /// The accessory's own box says 56 (a 64pt bar whose capsule bottom sits 8
+    /// above it), but the frame the keyboard reports runs a further capsule-height
+    /// past the bar it carries, and anything hung off 56 floats 48pt high — which
+    /// is exactly the gap the duration panel used to show here while the parked one
+    /// sat flush. 84 is what the live keyboard actually needs — landed by eye
+    /// between 104 (panel tucked under the capsule) and 80 (floating off it).
     var timerBottomInset: CGFloat {
-        isEditing ? max(28, keyboardHeight - 56) : 28
+        isEditing ? max(28, keyboardHeight - 84) : 28
     }
 }
 
@@ -532,16 +538,17 @@ struct TimerCapsule: View {
     }
 }
 
-/// The timer capsule's duration panel, grown up from **behind** the real bar
-/// button — idle (where the capsule first stretches leftward to say "Rest") and
+/// The timer capsule's duration panel, grown upward out of the real bar button's
+/// top edge — idle (where the capsule first stretches leftward to say "Rest") and
 /// running alike. The capsule in the bar keeps receiving every tap (open and
-/// close both) while this panel is pure backdrop: glass whose bottom 48pt sits
-/// behind the capsule, sized by an invisible twin of the capsule's current face
-/// so the widths match, with the choices stacking above. Opening therefore
-/// reads as the button's own glass growing upward, with nothing swapped and
-/// nothing restyled. Hosted full-screen and permanently by the session view, so
-/// the grow always animates and the tap-anywhere-outside catcher comes with it;
-/// hit-testing is off entirely while closed.
+/// close both) while this panel is pure backdrop: its own glass card sitting
+/// clear ABOVE the capsule rather than behind it, sized by an invisible twin of
+/// the capsule's current face so the two line up in width. Opening therefore
+/// reads as the choices rising out of the button, with nothing swapped, nothing
+/// restyled, and nothing drawn over the button itself. Hosted full-screen and
+/// permanently by the session view, so the grow always animates and the
+/// tap-anywhere-outside catcher comes with it; hit-testing is off entirely
+/// while closed.
 struct TimerBubble: View {
     var stopwatch: StopwatchModel
     /// Distance from the physical screen bottom up to the capsule's bottom edge.
@@ -556,7 +563,12 @@ struct TimerBubble: View {
             panel
                 // Both bars park the capsule 28pt from the trailing edge.
                 .padding(.trailing, 28)
-                .padding(.bottom, bottomInset)
+                // Above the capsule, not behind it: its bottom inset, plus the
+                // 48pt capsule itself and 8pt of daylight between the two glasses
+                // — enough to read as two pieces, close enough to read as one
+                // control. Wherever the capsule is — parked, or riding the
+                // keyboard — the panel follows it and clears it by the same gap.
+                .padding(.bottom, bottomInset + 56)
         }
         .ignoresSafeArea()
     }
@@ -575,7 +587,10 @@ struct TimerBubble: View {
                             .font(.system(size: 17, weight: .semibold).monospacedDigit())
                             .padding(.horizontal, 14)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .frame(height: 44)
+                            // Tighter than a list row: three of these is the
+                            // whole panel, and at 44 apiece it stood taller
+                            // than it had anything to say.
+                            .frame(height: 36)
                             .contentShape(.rect)
                     }
                 }
@@ -586,16 +601,20 @@ struct TimerBubble: View {
                 .transition(.identity)
             }
             // Invisible twin of the capsule's content, at the capsule's own
-            // insets: it gives the panel the capsule's width and reserves the
-            // 48pt the real button draws over.
+            // insets, flattened to nothing: width is all it is here for — the
+            // panel matching the button it rises out of — now that the capsule's
+            // own 48pt is no longer part of this card.
             StopwatchFace(stopwatch: stopwatch)
-                .frame(height: 48)
-                .opacity(0)
+                .frame(height: 0)
+                .hidden()
         }
+        // The rows are flush to each other; the glass gets its breath at the two
+        // ends, so the top and bottom choices aren't sitting in the corner curves.
+        .padding(.vertical, 8)
         .fixedSize(horizontal: true, vertical: false)
         .buttonStyle(.plain)
-        // At the collapsed 48pt height, radius 24 *is* the capsule, so the
-        // shape stays continuous with the button it hides behind.
+        // The capsule's own radius, so the card above reads as the same family
+        // of glass as the button below it.
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
         .opacity(stopwatch.isChoosing ? 1 : 0)
         .allowsHitTesting(stopwatch.isChoosing)

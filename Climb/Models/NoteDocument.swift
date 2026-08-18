@@ -243,6 +243,11 @@ enum NoteDocument {
     /// someone would actually give one, so the example teaches the habit as well as
     /// the field. The climb's doubles as a hint that the colour in a name is what
     /// tints its bubble.
+    ///
+    /// These are the walkthrough's own words too — it asks for these exact names, and
+    /// waits until it has them — so the example a heading shows and the name being
+    /// asked for are always the same string.
+    static let workoutName = "Project Day"
     static let sectionPlaceholder = "Warmup"
     static let climbPlaceholder = "Blue V4"
 
@@ -281,7 +286,7 @@ enum NoteDocument {
 
     /// Shown behind an empty document, so the first line reads as the title it becomes.
     static var placeholderText: NSAttributedString {
-        let text = NSMutableAttributedString(string: "Project Day", attributes: titleAttributes)
+        let text = NSMutableAttributedString(string: workoutName, attributes: titleAttributes)
         text.addAttribute(.foregroundColor,
                           value: UIColor.placeholderText,
                           range: NSRange(location: 0, length: text.length))
@@ -299,11 +304,28 @@ enum NoteDocument {
 
     /// Where the walkthrough starts: the note itself, before any of the bar. Nothing
     /// to press for this one — the caret is already sitting in the title.
-    static let titlePrompt = "Give your workout a name"
+    ///
+    /// It asks for a name rather than for *a* name: one thing to do, no decision to
+    /// make in the middle of being shown how the app works, and the walkthrough knows
+    /// exactly when it has been done.
+    static let titlePrompt = "Name the workout “\(workoutName)”"
 
     /// What the walkthrough asks once the button has been pressed and the heading is
     /// sitting there empty: the ask is no longer the button. Indexed like `hints`.
-    static let namePrompts = ["Give the section a name", "Give the climb a name"]
+    static let namePrompts = ["Name the section “\(sectionPlaceholder)”",
+                              "Name the climb “\(climbPlaceholder)”"]
+
+    /// The last step, and the only one whose button has already done something before
+    /// it is pressed: recording an attempt starts the rest countdown by itself. One
+    /// line, like every other step — the countdown is already running where it can be
+    /// seen, so all that is left to say is what the tap on it is for. Named by the mark
+    /// on the capsule rather than by the word, the way every other button is.
+    static let restHint = (symbol: "timer", tail: "to adjust rest")
+
+    /// Set like every other line the walkthrough shows.
+    static var restText: NSAttributedString {
+        hintText([restHint])
+    }
 
     /// One of those, set like a hint line: same margin, same quiet colour.
     static func promptText(_ prompt: String) -> NSAttributedString {

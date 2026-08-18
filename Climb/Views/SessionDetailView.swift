@@ -118,7 +118,21 @@ struct SessionDetailView: View {
         .onChange(of: guide.isRestUnlocked, initial: true) {
             barModel.isRestLocked = !guide.isRestUnlocked
         }
+        // Every ask answered is worth feeling — the button pressed and the name given
+        // both count, which is what `reached` counts. Only going forward: walking the
+        // walkthrough back is a correction, not an achievement.
+        .onChange(of: guide.reached) { was, now in
+            guard now > was else { return }
+            Haptics.stepDone()
+        }
+        // The walkthrough's last step, and the only one that leaves nothing behind in
+        // the note: opening the rest panel is a tap and nothing else, so it is watched
+        // here rather than read back out of the document.
+        .onChange(of: stopwatch.isChoosing) { _, isChoosing in
+            if isChoosing { guide.restOpened() }
+        }
         .onAppear {
+            if guide.isRunning { Haptics.warmUp() }
             barPark.onParkedVisibilityChange = { barModel.parkedVisible = $0 }
             // A note opened by the new-note button lands typing at its title, the way
             // Notes does — the caret sits at the top of an empty document already.
