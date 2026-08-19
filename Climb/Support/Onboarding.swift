@@ -19,9 +19,10 @@ final class Onboarding {
     static let showsPaywall = false
 
     /// Off: a purchase opens the app, which is what it is for. On, it starts the run
-    /// over from the quiz instead and throws the practice note away with it, so the
-    /// flow can be walked end to end as many times as it takes without reinstalling
-    /// between passes — one line to flip while onboarding is what is being worked on.
+    /// over from the quiz instead, so the flow can be walked end to end as many times as
+    /// it takes without reinstalling between passes — one line to flip while onboarding
+    /// is what is being worked on. It puts back only where you are in the flow: whatever
+    /// the last pass left in the practice note is still there at the start of the next.
     static let loopsForDevelopment = false
 
     private static let phaseKey = "onboardingPhase"
@@ -82,6 +83,7 @@ final class Onboarding {
 
     func finishPaywall() { phase = .done }
 
-    /// Debug helper: back to the top of the flow.
+    /// Debug helper: back to the top of the flow. Where you are, and nothing you own —
+    /// there is no path in the app that deletes a note without being asked to.
     func reset() { phase = .quiz; quizIndex = 0; answers = [:] }
 }

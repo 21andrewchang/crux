@@ -76,6 +76,12 @@ enum NoteDocument {
     /// lands exactly where that first line would.
     static let headingSpacing: CGFloat = 8
 
+    /// Air above a climb heading, on top of the room its bubble already needs. A climb
+    /// starts a new stretch of the note, and what came before it — usually the last
+    /// attempt of the climb before — should end well clear of where the next one
+    /// begins.
+    static let climbHeadingLead: CGFloat = 14
+
     /// The name reads in the climb's colour; the bubble behind it is drawn by the
     /// layout fragment, which swells past the line by `inflate` above and below. That
     /// swell is paid for out of the paragraph's own spacing — held open above so the
@@ -85,7 +91,7 @@ enum NoteDocument {
     static func headerAttributes(tint: UIColor) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        paragraph.paragraphSpacingBefore = ClimbHeaderLayoutFragment.inflate
+        paragraph.paragraphSpacingBefore = ClimbHeaderLayoutFragment.inflate + climbHeadingLead
         paragraph.paragraphSpacing = headingSpacing + ClimbHeaderLayoutFragment.inflate
         paragraph.firstLineHeadIndent = textIndent
         paragraph.headIndent = textIndent
@@ -114,7 +120,9 @@ enum NoteDocument {
 
     /// Body text in every way but colour — the notes sit in the note like anything
     /// else you typed, just quieter, tucked under their row.
-    static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
+    /// The shape of a note's line. The last one of a row's notes takes a copy with a
+    /// deeper trailing space — see `quoteEndSpacing`.
+    static let quoteParagraph: NSParagraphStyle = {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         // A step more than body text, so the quote reads as a block that ends before
@@ -123,15 +131,25 @@ enum NoteDocument {
         paragraph.firstLineHeadIndent = textIndent
         paragraph.headIndent = textIndent
         paragraph.tailIndent = -textIndent
+        return paragraph
+    }()
+
+    static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
+        let paragraph = quoteParagraph
 
         var attributes = bodyAttributes
-        // The words read at full strength; the quote's quietness lives in the bar,
-        // the indent, and the greyed clock instead.
-        attributes[.foregroundColor] = UIColor.label
+        // A step back from the label white the rest of the note is written in — enough
+        // that the row's name reads as the head of the block and the notes as what is
+        // filed under it, and still well clear of the grey the clock steps back to.
+        attributes[.foregroundColor] = UIColor(white: 0.75, alpha: 1)
         attributes[.paragraphStyle] = paragraph
         attributes[noteQuote] = id
         return attributes
     }
+
+    /// Set on the last note line under a row, so the card drawn behind the notes
+    /// knows where to close off instead of running into whatever follows.
+    static let noteQuoteEnd = NSAttributedString.Key("climbNoteQuoteEnd")
 
     /// The clock a note line opens with, as seconds — carried on the token's own
     /// characters so a tap can read the moment straight off the text under it.
@@ -147,14 +165,21 @@ enum NoteDocument {
         ]
     }
 
-    /// Room for the bookmark drawn in the gutter before the clock.
-    static let bookmarkGutter: CGFloat = 22
+    /// Room for the bookmark drawn in the gutter before the clock. Derived, not
+    /// guessed: the mark hangs in the row's play-glyph column and the words start
+    /// where the row's own name starts, so a clip's text and the attempt it belongs to
+    /// read down one edge.
+    static let bookmarkGutter: CGFloat = AttemptRowView.textColumn - textIndent
 
     /// Trailing room held open on a stamped line for the clock drawn at its right edge.
     static let clockReserve: CGFloat = 52
 
     /// A stamped line sits one gutter past the text indent, leaving the bookmark its
     /// lane before the words — and stops short on the right, where the clock lives.
+    ///
+    /// One line, always, however much was written into the clip: a row's clips are a
+    /// list of links to skim, and a wordy one wrapping to four lines buries the rest of
+    /// them. The whole note is a tap away, in the clip it belongs to.
     private static let stampedParagraph: NSParagraphStyle = {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
@@ -162,6 +187,7 @@ enum NoteDocument {
         paragraph.firstLineHeadIndent = textIndent + bookmarkGutter
         paragraph.headIndent = textIndent + bookmarkGutter
         paragraph.tailIndent = -(textIndent + clockReserve)
+        paragraph.lineBreakMode = .byTruncatingTail
         return paragraph
     }()
 
@@ -199,10 +225,12 @@ enum NoteDocument {
 
     // MARK: Typography
     //
-    // Apple Notes styles the first line as the document title and everything after it
-    // as body text. There is no formatting UI yet, so these are applied wholesale on
-    // every edit rather than tracked as user intent.
+    // Every page of the note is body text — the title is not in any of them, it sits
+    // in the header above the tabs. There is no formatting UI yet, so these are
+    // applied wholesale on every edit rather than tracked as user intent.
 
+    /// The session's name, as drawn in the header. Nothing in the document carries
+    /// these any more; the title field and its placeholder do.
     static var titleAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.paragraphSpacing = 6
@@ -251,47 +279,49 @@ enum NoteDocument {
     static let sectionPlaceholder = "Warmup"
     static let climbPlaceholder = "Blue V4"
 
-    /// Text that belongs to the note itself rather than to anything in it: flush with
-    /// the title, at the page's own margin. The indent is what filing a line under a
-    /// climb or a section buys — see `groupedBodyAttributes` — so a line that is under
-    /// neither hangs where the title does.
+    /// What an empty heading says on any other note: the thing it is, not an example
+    /// of one. The examples are the walkthrough's — it asks for those exact names.
+    static let newSectionPlaceholder = "New Section"
+    static let newClimbPlaceholder = "New Climb"
+
+    /// Whether the walkthrough is running, and headings should therefore show the
+    /// names it asks for. Headings draw themselves from a text-layout fragment, which
+    /// has no view to ask — and only one note is ever on screen, so the note sets this
+    /// as the walkthrough starts and ends. See `NoteEditor.updatePlaceholder`.
+    static var showsTutorialExamples = false
+
+    /// The example an empty section heading shows.
+    static var sectionExample: String {
+        showsTutorialExamples ? sectionPlaceholder : newSectionPlaceholder
+    }
+
+    /// The example an empty climb bubble shows.
+    static var climbExample: String {
+        showsTutorialExamples ? climbPlaceholder : newClimbPlaceholder
+    }
+
+    /// Text you type into the note, wherever it sits: always flush with the title, at
+    /// the page's own margin. Being filed under a climb or a section buys a line
+    /// nothing — the headings step in, the prose under them does not, so the whole
+    /// note reads down one left edge.
     static var bodyAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         paragraph.paragraphSpacing = 2
         return [
             .font: UIFont.preferredFont(forTextStyle: .body),
-            .foregroundColor: UIColor.label,
+            // A step back from pure white: the headings, the bubbles and the counts
+            // are what the eye should catch first, and prose written in full label
+            // white competes with them.
+            .foregroundColor: UIColor(white: 0.88, alpha: 1),
             .paragraphStyle: paragraph,
         ]
     }
 
-    /// Body text inside a group — anywhere below a climb or section heading. It steps
-    /// in to the same left edge as the names in those headings and the words in the
-    /// bubbles, so everything filed under a heading reads as one column under it.
-    static var groupedBodyAttributes: [NSAttributedString.Key: Any] {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
-        paragraph.paragraphSpacing = 2
-        paragraph.firstLineHeadIndent = textIndent
-        paragraph.headIndent = textIndent
-        // Negative means "in from the trailing edge": the same breathing room on
-        // both sides, where a bare head indent would read as left-heavy.
-        paragraph.tailIndent = -textIndent
-
-        var attributes = bodyAttributes
-        attributes[.paragraphStyle] = paragraph
-        return attributes
-    }
-
-    /// Shown behind an empty document, so the first line reads as the title it becomes.
-    static var placeholderText: NSAttributedString {
-        let text = NSMutableAttributedString(string: workoutName, attributes: titleAttributes)
-        text.addAttribute(.foregroundColor,
-                          value: UIColor.placeholderText,
-                          range: NSRange(location: 0, length: text.length))
-        return text
-    }
+    /// What an empty title says outside the walkthrough: the field, not an example.
+    /// The walkthrough is the one place that asks for a particular name, and there the
+    /// placeholder is that name — see `SessionDetailView.titleField`.
+    static let titlePlaceholder = "Workout Name"
 
     /// The bar, a button at a time, each named by the mark that is actually on it —
     /// in the order the walkthrough asks for them, which is also the order they sit
@@ -325,6 +355,13 @@ enum NoteDocument {
     /// Set like every other line the walkthrough shows.
     static var restText: NSAttributedString {
         hintText([restHint])
+    }
+
+    /// What an empty page says behind its first line: the tab's own job, set in the
+    /// hand the page is written in and in the colour a placeholder is. A label behind
+    /// the document, never characters in it — see `attachPlaceholder`.
+    static func pagePlaceholderText(_ text: String) -> NSAttributedString {
+        promptText(text)
     }
 
     /// One of those, set like a hint line: same margin, same quiet colour.
@@ -386,17 +423,20 @@ enum NoteDocument {
     /// legacy stored-climb heading: its name comes in as an inline heading line, and
     /// the ID is gone on the next save.
     static func attributedString(for session: ClimbSession,
+                                 tab: NoteTab = .main,
                                  climbName: (UUID) -> String? = { _ in nil },
+                                 makeCheckIn: () -> CheckInAttachment? = { nil },
                                  makeAttachment: (UUID) -> NSTextAttachment?) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var idIndex = 0
         var headingStarts: [Int] = []
         var sectionStarts: [Int] = []
+        let ids = session.attachmentIDs(for: tab)
 
-        for character in session.bodyText {
+        for character in session.text(for: tab) {
             if String(character) == attachmentMarker {
-                guard idIndex < session.attachmentIDs.count else { continue }
-                let id = session.attachmentIDs[idIndex]
+                guard idIndex < ids.count else { continue }
+                let id = ids[idIndex]
                 idIndex += 1
                 if let attachment = makeAttachment(id) {
                     result.append(NSAttributedString(attachment: attachment))
@@ -428,6 +468,7 @@ enum NoteDocument {
         }
 
         restoreNotes(in: result) { session.attempt(with: $0)?.notes ?? "" }
+        if let card = makeCheckIn() { insertCheckIn(card, into: result) }
         applyStyles(to: result)
         return result
     }
@@ -506,10 +547,55 @@ enum NoteDocument {
         return isBlock ? nil : quote
     }
 
+    /// Opens the check-in page with the card, on a line of its own above whatever is
+    /// written under it.
+    ///
+    /// The card is never in the stored text. It is not something anyone typed — it is
+    /// something every session simply has — so it is put in on the way out of storage
+    /// and taken off again on the way back (`withoutCheckIn`). That is what hands one
+    /// to every note written before the card existed, and what keeps the marker ids
+    /// out of it entirely.
+    private static func insertCheckIn(_ card: CheckInAttachment, into result: NSMutableAttributedString) {
+        let block = NSMutableAttributedString(attachment: card)
+        block.append(NSAttributedString(string: "\n"))
+        block.addAttributes(blockAttributes(), range: NSRange(location: 0, length: block.length))
+        result.insert(block, at: 0)
+    }
+
+    /// Where the check-in card sits, its own line break included — the run
+    /// `insertCheckIn` put in, and the run that has to come back out before anything
+    /// reads the document as text. nil for a page that has no card.
+    static func checkInRange(in storage: NSAttributedString) -> NSRange? {
+        var found: NSRange?
+        storage.enumerateAttribute(.attachment,
+                                   in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            if value is CheckInAttachment {
+                found = range
+                stop.pointee = true
+            }
+        }
+        guard var range = found else { return nil }
+        let text = storage.string as NSString
+        if NSMaxRange(range) < text.length, text.character(at: NSMaxRange(range)) == 0x000A {
+            range.length += 1
+        }
+        return range
+    }
+
+    /// The document as text, with the card taken back out. Its break goes with it, or
+    /// the page would grow a blank line at its head every time it was saved.
+    private static func withoutCheckIn(_ attributed: NSAttributedString) -> NSAttributedString {
+        guard let range = checkInRange(in: attributed) else { return attributed }
+        let stripped = NSMutableAttributedString(attributedString: attributed)
+        stripped.deleteCharacters(in: range)
+        return stripped
+    }
+
     /// Flattens the editor's contents back to storage, recovering attachment order
     /// from the document itself so edits and deletions need no separate bookkeeping.
     /// Heading lines go out behind their sentinel — it is the only trace they leave.
     static func serialize(_ attributed: NSAttributedString) -> (text: String, ids: [UUID]) {
+        let attributed = withoutCheckIn(attributed)
         var text = ""
         var ids: [UUID] = []
         let full = NSRange(location: 0, length: attributed.length)
@@ -550,17 +636,38 @@ enum NoteDocument {
         return (out as String, ids)
     }
 
+    /// Air above a block, so one card never sits flush against whatever ended above
+    /// it — an expanded attempt's notes run right down to their card's edge, and the
+    /// next row began exactly where they stopped.
+    static let blockLead: CGFloat = 8
+
+    /// Trailing space on the last line of a note. The card takes
+    /// `BookmarkLayoutFragment.cardBottomPadding` of it as its own bottom padding;
+    /// what is left over is the gap under the card, before the next block's own lead.
+    static let quoteEndSpacing: CGFloat = 20
+
     /// A row draws its own height exactly; the body's line and paragraph spacing on top
-    /// of that just reads as slack above and below it, so its line gets none.
-    static func blockAttributes() -> [NSAttributedString.Key: Any] {
+    /// of that just reads as slack above and below it, so its line gets none of that —
+    /// only the lead that keeps it off the block before it.
+    ///
+    /// Given a height, the line is pinned to exactly that. The break sharing the line
+    /// with the block still carries the body font, and its descent hangs below the
+    /// block as a few points of nobody's-space — which is why the gap between two
+    /// plain rows read as bigger than the gap under an expanded one, where the last
+    /// thing above the gap is real text whose descent belongs to it.
+    static func blockAttributes(lineHeight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 0
         paragraph.paragraphSpacing = 0
-        paragraph.paragraphSpacingBefore = 0
+        paragraph.paragraphSpacingBefore = blockLead
+        if let lineHeight {
+            paragraph.minimumLineHeight = lineHeight
+            paragraph.maximumLineHeight = lineHeight
+        }
         return [.paragraphStyle: paragraph]
     }
 
-    /// Restyles in place: first line as title, remainder as body, rows tight, heading
+    /// Restyles in place: body text throughout, rows tight, heading
     /// lines as tinted bubbles, and the notes bound to a row as a quote. Attribute-only
     /// edits, so the selection and any attachments are left untouched.
     ///
@@ -683,6 +790,7 @@ enum NoteDocument {
         // Re-derived below from what the text now says, so an edited token never
         // keeps a stale time or a stale tint.
         storage.removeAttribute(noteTimestamp, range: full)
+        storage.removeAttribute(noteQuoteEnd, range: full)
         // Rewritten below from the fold list, so a fold that leaked onto body text —
         // or whose heading stopped being one — dies here rather than lingering.
         storage.removeAttribute(foldedHeading, range: full)
@@ -690,25 +798,61 @@ enum NoteDocument {
         // being last must get its width back.
         storage.removeAttribute(.kern, range: full)
         storage.addAttributes(bodyAttributes, range: full)
-        // Everything past the first heading of either kind is inside some group — a
-        // group only ever ends where the next one begins — so that is where the indent
-        // starts. What comes above it is the note's own text and stays at the margin.
-        if let first = (headings + sections).min(by: { $0.location < $1.location }),
-           NSMaxRange(first) < storage.length {
-            storage.addAttributes(groupedBodyAttributes,
-                                  range: NSRange(location: NSMaxRange(first),
-                                                 length: storage.length - NSMaxRange(first)))
-        }
-        let firstLine = text.lineRange(for: NSRange(location: 0, length: 0))
-        storage.addAttributes(titleAttributes, range: firstLine)
         for block in blocks where block.id != nil {
-            storage.addAttributes(blockAttributes(), range: block.line)
+            storage.addAttributes(blockAttributes(lineHeight: AttemptAttachment.rowHeight),
+                                  range: block.line)
+        }
+        // The check-in draws its own height and keeps its own margins, so its line
+        // gets none of the body's slack — the same deal an attempt row gets. It is
+        // not in `blocks`: nothing files notes under it and nothing ends a group at
+        // it, it is simply the block the note opens with.
+        storage.enumerateAttribute(.attachment, in: full) { value, range, _ in
+            guard value is CheckInAttachment else { return }
+            storage.addAttributes(blockAttributes(), range: text.lineRange(for: range))
         }
         for quote in quotes {
             storage.addAttributes(quoteAttributes(for: quote.id), range: quote.range)
         }
         for quote in quotes {
             styleQuoteLines(in: storage, range: quote.range, id: quote.id)
+        }
+        // The last line under each row closes that row's card off, and carries the
+        // room the card needs under its words plus the gap that follows it.
+        for id in Set(quotes.map(\.id)) {
+            guard let last = quotes.filter({ $0.id == id }).max(by: { $0.range.location < $1.range.location })
+            else { continue }
+            storage.addAttribute(noteQuoteEnd, value: true, range: last.range)
+            // Built on whatever the line already has, never on the plain quote style:
+            // a line opening with a clock has been given the deeper indent that clears
+            // its bookmark, and handing it a fresh style takes that away — which drops
+            // the words back on top of the mark.
+            guard last.range.location < storage.length else { continue }
+            let current = storage.attribute(.paragraphStyle, at: last.range.location,
+                                            effectiveRange: nil) as? NSParagraphStyle ?? quoteParagraph
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.setParagraphStyle(current)
+            paragraph.paragraphSpacing = quoteEndSpacing
+            storage.addAttribute(.paragraphStyle, value: paragraph, range: last.range)
+        }
+
+        // Each row is told whether anything is written under it — that is what puts a
+        // chevron on it and stops its card rounding off at its own bottom edge — and
+        // a row whose chevron is closed hides its notes with the same hairline trick a
+        // folded heading uses on its group.
+        let written = Set(quotes.map(\.id))
+        var closed: Set<UUID> = []
+        storage.enumerateAttribute(.attachment, in: full) { value, _, _ in
+            guard let attempt = value as? AttemptAttachment else { return }
+            attempt.hasNotes = written.contains(attempt.attemptID)
+            if attempt.areNotesFolded, attempt.hasNotes { closed.insert(attempt.attemptID) }
+            attempt.rowView?.showNotes(attempt.hasNotes, folded: attempt.areNotesFolded)
+        }
+        for quote in quotes where closed.contains(quote.id) {
+            storage.addAttributes([.font: UIFont.systemFont(ofSize: 0.1),
+                                   .foregroundColor: UIColor.clear,
+                                   .paragraphStyle: foldedParagraph], range: quote.range)
+            storage.removeAttribute(noteTimestamp, range: quote.range)
+            storage.removeAttribute(noteQuoteEnd, range: quote.range)
         }
         // Headings last, tinted from what the line now says — this is what recolours
         // the bubble as a colour word is typed into it. Climbs after sections, so a
@@ -735,8 +879,7 @@ enum NoteDocument {
         // style from its first character, so nothing above it moves.
         if text.character(at: storage.length - 1) == 0x000A {
             let last = NSRange(location: storage.length - 1, length: 1)
-            let inGroup = (headings + sections).contains { $0.location < last.location }
-            storage.addAttributes(inGroup ? groupedBodyAttributes : bodyAttributes, range: last)
+            storage.addAttributes(bodyAttributes, range: last)
         }
 
         // Folding, last, over everything above: a folded heading's group — attempt

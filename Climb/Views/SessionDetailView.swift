@@ -19,20 +19,40 @@ struct SessionDetailView: View {
     /// climb's marker resolves to its name and comes back as an inline bubble.
     @Query private var climbs: [Climb]
 
-    @State private var editorController = NoteEditorController()
+    /// One handle per page — each tab is its own editor, with its own cursor and its
+    /// own undo stack, and the bar's buttons act on whichever is open.
+    @State private var controllers = NoteTab.allCases.map { _ in NoteEditorController() }
+    /// The page on screen. Turned by the pills above or by swiping the page itself.
+    @State private var tab: NoteTab
+    /// Which page holds the keyboard, if any. A page turn hands focus from one editor
+    /// to the next, so this is the pair of them rather than a single flag.
+    @State private var focusedTab: NoteTab?
+    /// The name in the header, which is the session's rather than any page's.
+    @FocusState private var isTitleFocused: Bool
+    /// How far the open page is scrolled, which is how far the head of the note has
+    /// been carried up with it. Its own object rather than a `@State` number so a
+    /// scroll redraws the header alone and not the four editors under it.
+    @State private var headerScroll = HeaderScroll()
+    /// What the header comes to — the room every page holds open at its top.
+    @State private var headerHeight: CGFloat = 0
+
     /// The global bar's model — the bar and the timer live above the whole
     /// navigation stack (see SessionListView); this page just registers its
     /// actions with it while on screen.
     @Environment(BottomBarModel.self) private var barModel
     private var stopwatch: StopwatchModel { barModel.stopwatch }
     @State private var pendingAttemptID: UUID?
+    /// A retake asked for from the replay page, waiting for that sheet to close.
+    @State private var retakeAfterClose = false
+    /// When the attempt being reviewed stopped recording — what its rest is measured
+    /// from once the page closes.
+    @State private var attemptRestStart: Date?
     @State private var openedAttemptID: UUID?
     /// Outlives `openedAttemptID`, which is already nil by the time the sheet's dismissal
     /// handler runs.
     @State private var editedAttemptID: UUID?
     /// Where the opened attempt's player starts — set by tapping a timestamp in the note.
     @State private var openedAttemptStart: TimeInterval?
-    @State private var isEditing = false
     /// Times the swap between the parked system bar and the keyboard bar.
     @State private var barPark = BarParkModel()
     /// Tracked off the keyboard notifications to tell rises from dismissals.
@@ -53,61 +73,40 @@ struct SessionDetailView: View {
         self.startsEditing = startsEditing
         self.isOnboarding = isOnboarding
         _guide = State(initialValue: TutorialGuide(session: session))
+        // Before anything reads a page: a note written before the tabs kept its name
+        // as its first line, and the header has to be handed it rather than the main
+        // page opening with the title still sitting in it. Does nothing the second
+        // time, which is every time after this one.
+        session.splitTitleIfNeeded()
+        // The walkthrough is taught on the main page, and a session already checked in
+        // has no reason to open on the card again.
+        let opening: NoteTab = session.id == Tutorial.id || session.readiness != nil ? .main : .checkIn
+        _tab = State(initialValue: opening)
     }
 
+    /// The page holding the keyboard, if the note is being typed in at all.
+    private var isEditing: Bool { focusedTab != nil }
+
+    /// The handle for the page on screen — what the bar's buttons and the attempt
+    /// sheets act through.
+    private var editorController: NoteEditorController { controllers[tab.rawValue] }
+
     var body: some View {
-        NoteEditor(
-            session: session,
-            controller: editorController,
-            onStartAttempt: startAttempt,
-            onAddClimb: { editorController.insertClimbHeader() },
-            onAddSection: { editorController.insertSectionHeader() },
-            stopwatch: stopwatch,
-            guide: guide,
-            barPark: barPark,
-            onOpenAttempt: {
-                openedAttemptStart = nil
-                openedAttemptID = $0
-                editedAttemptID = $0
-            },
-            onSeekAttempt: { id, seconds in
-                openedAttemptStart = seconds
-                openedAttemptID = id
-                editedAttemptID = id
-            },
-            legacyClimbName: { id in climbs.first { $0.id == id }?.name },
-            onConfirmDelete: { count in
-                doomedRowCount = count
-                isConfirmingRowDelete = true
-            },
-            onChange: saveChanges,
-            onFocusChange: { focused in
-                isEditing = focused
-                barModel.isEditing = focused
-                // The keyboard can come back without the will-change notification
-                // arriving in a useful order — dismissing the attempt sheet hands
-                // focus straight back — so the bar swap keys off focus too.
-                if focused { barPark.lift() }
-            }
-        )
+        ZStack(alignment: .top) {
+            // The pages run the whole height of the screen, under the bars at both
+            // ends and under the header itself — they hold the room open with their
+            // own content inset, so what is chrome is chrome and what is page is the
+            // whole screen.
+            pages
+            NoteHeader(session: session,
+                       scroll: headerScroll,
+                       tab: $tab,
+                       placeholder: guide.isRunning ? NoteDocument.workoutName : NoteDocument.titlePlaceholder,
+                       isTitleFocused: $isTitleFocused,
+                       onHeight: { headerHeight = $0 })
+        }
         .background(Color.black)
         .background(BarParkAnchor(model: barPark))
-        .ignoresSafeArea(.container, edges: .vertical)
-        // The note runs edge to edge under the bars; a black fade at each end
-        // keeps the status bar and the bottom bar legible over the text.
-        .overlay {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.black.opacity(0.5), .black.opacity(0)],
-                               startPoint: .top, endPoint: .bottom)
-                    .frame(height: 130)
-                Spacer(minLength: 0)
-                LinearGradient(colors: [.black.opacity(0), .black],
-                               startPoint: .top, endPoint: .bottom)
-                    .frame(height: 150)
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-        }
         // The timer renders globally, above the navigation stack
         // (SessionListView); this page mirrors the state it positions itself
         // off, and wires the keyboard swap: the global capsule gets the same
@@ -134,10 +133,43 @@ struct SessionDetailView: View {
         .onAppear {
             if guide.isRunning { Haptics.warmUp() }
             barPark.onParkedVisibilityChange = { barModel.parkedVisible = $0 }
-            // A note opened by the new-note button lands typing at its title, the way
-            // Notes does — the caret sits at the top of an empty document already.
-            if startsEditing { editorController.focus() }
+            // A note opened by the new-note button lands typing at its name, the way
+            // Notes does — except the name is in the header now, not the first line.
+            if startsEditing { isTitleFocused = true }
         }
+        // The name is the one thing above the tabs, so it saves on its own rather than
+        // through a page's editor.
+        .onChange(of: session.title) {
+            // A title is one line. `axis: .vertical` lets it wrap, which also lets
+            // Return put a break in it — so the break is taken as the Done it meant.
+            if session.title.contains("\n") {
+                session.title = session.title.replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespaces)
+                isTitleFocused = false
+            }
+            session.updatedAt = Date()
+            saveChanges()
+        }
+        // Turning a page with the keyboard up would leave it up over a page nobody
+        // asked to type in.
+        // Felt here rather than on the pills, so a page turned by swiping lands the
+        // same as one turned by tapping — it is the page arriving that is worth a tap
+        // of the phone, not the gesture that asked for it.
+        .onChange(of: tab) { left, arrived in
+            Haptics.selection()
+            // The page being left is the one holding the keyboard, so it is the one
+            // asked to give it up.
+            controllers[left.rawValue].endEditing()
+            isTitleFocused = false
+            // The page arrived at has its own scroll position, and nothing will report
+            // it until someone touches it — so it is asked, and the head of the note
+            // travels to where that page has it rather than cutting to it. A page turn
+            // is a move between two places, not a place appearing.
+            withAnimation(.snappy(duration: 0.3)) {
+                headerScroll.travel = max(0, controllers[arrived.rawValue].scrolledDistance)
+            }
+        }
+
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             keyboardHeight = max(0, UIScreen.main.bounds.maxY - frame.minY)
@@ -164,7 +196,12 @@ struct SessionDetailView: View {
         }
         // No date in the top bar — it lives in the note itself, above the title.
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        // Both bars are their own floating buttons and nothing else: no backdrop
+        // behind either of them, so the page is one surface from the top edge of the
+        // screen to the bottom rather than a top, a middle and a bottom.
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .bottomBar)
+        .scrollEdgeEffectHidden(true, for: .all)
         .toolbar { toolbarContent }
         .confirmationDialog("Delete this session?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
             Button("Delete Session", role: .destructive, action: deleteSession)
@@ -191,30 +228,146 @@ struct SessionDetailView: View {
         // A sheet, same as the replay page, so recording and replaying an attempt are
         // one shape on screen. The flow decides for itself when swipe-to-dismiss is
         // allowed — free before recording starts, off once a take is on the line.
-        .sheet(item: $pendingAttemptID) { id in
+        .sheet(item: $pendingAttemptID, onDismiss: closeAttemptSheet) { id in
             AttemptFlowView(
                 attemptID: id,
                 ordinal: editorController.nextAttemptOrdinal(),
                 // The heading this attempt will land under, so the recording page is
                 // headed like the replay page.
                 climbName: editorController.currentClimbName(),
-                onFinish: { finishAttempt(id: id, captured: $0) },
-                onCancel: { pendingAttemptID = nil }
+                // The rest clock is started by the flow itself, the moment the
+                // recording stops — the page that follows shows it running.
+                stopwatch: stopwatch,
+                attempt: { session.attempt(with: id) },
+                onCapture: { saveAttempt(id: id, captured: $0) },
+                onDiscard: { discardAttempt(id: id) },
+                onClose: { pendingAttemptID = nil }
             )
         }
         // A native sheet, so dragging the page around comes from the system. On dismiss
         // rather than on Done: the note has to come back showing what the page ended up
         // saying.
-        .sheet(item: $openedAttemptID, onDismiss: syncEditedAttempt) { id in
+        .sheet(item: $openedAttemptID, onDismiss: {
+            syncEditedAttempt()
+            // A retake can't open the camera until this sheet is actually gone — two
+            // sheets swapping in one turn of the run loop leaves neither on screen.
+            if retakeAfterClose {
+                retakeAfterClose = false
+                pendingAttemptID = UUID()
+            }
+        }) { id in
             if let attempt = session.attempt(with: id) {
                 AttemptDetailView(
                     attempt: attempt,
                     ordinal: editorController.groupOrdinal(of: id) ?? session.ordinal(of: id),
                     startAt: openedAttemptStart,
+                    stopwatch: stopwatch,
+                    // Both do exactly what deleting the row in the note does — the
+                    // reconcile on dismiss detaches the attempt, and Undo in the
+                    // corner covers it until the note is left. Retake then opens the
+                    // camera on the way out.
+                    actions: AttemptActions(
+                        onRetake: {
+                            removeAttemptRow(id: id)
+                            retakeAfterClose = true
+                            openedAttemptID = nil
+                        },
+                        onDelete: {
+                            removeAttemptRow(id: id)
+                            openedAttemptID = nil
+                        }
+                    ),
                     onDone: { openedAttemptID = nil }
                 )
             }
         }
+    }
+
+    // MARK: Header
+
+    /// Scrolling on the page that is open. Straight through, no thresholds and no
+    /// latching: the head of the note is being carried by the page under it, so it
+    /// moves exactly as far as the page does until the pills reach the top.
+    ///
+    /// Pulling past the top is not travel — the head stays where it is rather than
+    /// being dragged further down than it belongs.
+    private func pageScrolled(_ distance: CGFloat, from page: NoteTab) {
+        guard page == tab else { return }
+        headerScroll.travel = max(0, distance)
+    }
+
+    // MARK: Pages
+
+    /// The four documents, swipeable. Each is a real editor of its own, so turning a
+    /// page keeps the cursor, the scroll and the undo stack of the one you left.
+    private var pages: some View {
+        TabView(selection: $tab) {
+            ForEach(NoteTab.allCases) { page in
+                editor(for: page)
+                    // On the page itself, not on the `TabView` around it: the paging
+                    // view lays its children out inside the bars whatever the
+                    // container was told, and a page inset by them is a page cut off
+                    // in a straight line at both ends.
+                    .ignoresSafeArea(.container, edges: .vertical)
+                    .tag(page)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        // Both here and on each page, and both are load-bearing: this one is what
+        // stops the paging view clipping its children at the bars — measured with the
+        // editor tinted, which showed its frame ending exactly at the nav bar and the
+        // toolbar — and the one inside is what stops each page laying itself out
+        // inside them.
+        .ignoresSafeArea(.container, edges: .vertical)
+    }
+
+    private func editor(for page: NoteTab) -> some View {
+        NoteEditor(
+            session: session,
+            tab: page,
+            controller: controllers[page.rawValue],
+            onStartAttempt: startAttempt,
+            onAddClimb: { editorController.insertClimbHeader() },
+            onAddSection: { editorController.insertSectionHeader() },
+            stopwatch: stopwatch,
+            guide: guide,
+            barPark: barPark,
+            onOpenAttempt: {
+                openedAttemptStart = nil
+                openedAttemptID = $0
+                editedAttemptID = $0
+            },
+            onSeekAttempt: { id, seconds in
+                openedAttemptStart = seconds
+                openedAttemptID = id
+                editedAttemptID = id
+            },
+            legacyClimbName: { id in climbs.first { $0.id == id }?.name },
+            onConfirmDelete: { count in
+                doomedRowCount = count
+                isConfirmingRowDelete = true
+            },
+            onChange: saveChanges,
+            onFocusChange: { focused in focusChanged(page, focused: focused) },
+            onScroll: { pageScrolled($0, from: page) },
+            topInset: headerHeight
+        )
+    }
+
+    /// A page taking or giving up the keyboard. Two pages can report in one turn of the
+    /// run loop — a swipe hands focus straight over — so a page only ever clears the
+    /// flag it set itself.
+    private func focusChanged(_ page: NoteTab, focused: Bool) {
+        if focused {
+            focusedTab = page
+        } else if focusedTab == page {
+            focusedTab = nil
+        }
+        barModel.isEditing = isEditing
+        // The keyboard can come back without the will-change notification
+        // arriving in a useful order — dismissing the attempt sheet hands
+        // focus straight back — so the bar swap keys off focus too.
+        if focused { barPark.lift() }
     }
 
     // MARK: Toolbar
@@ -222,26 +375,70 @@ struct SessionDetailView: View {
     /// Split out of `body` purely for the type-checker: inlined, the toolbar's
     /// branches plus the sized glyphs push the one-expression body past what it
     /// will solve in reasonable time.
+    /// Undo, left of whatever else the corner is holding — the ellipsis with the
+    /// keyboard down, the Done check with it up. It is the only way back now that the
+    /// shake gesture is off, so it stays put, dimmed, when there is nothing to undo.
+    private var undoButton: some View {
+        Button {
+            editorController.undo()
+        } label: {
+            Label { Text("Undo") } icon: { topBarGlyph("arrow.uturn.backward") }
+        }
+        .labelStyle(.iconOnly)
+        .disabled(!editorController.canUndo)
+    }
+
+    /// Redo, in the same bubble as undo. Its own button, not a line in the ellipsis:
+    /// taking an edit back and putting it again are the same gesture at the same
+    /// moment, and one of them being two taps down a menu makes the pair unusable.
+    private var redoButton: some View {
+        Button {
+            editorController.redo()
+        } label: {
+            Label { Text("Redo") } icon: { topBarGlyph("arrow.uturn.forward") }
+        }
+        .labelStyle(.iconOnly)
+        .disabled(!editorController.canRedo)
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         // Onboarding owns both corners itself — back to the quiz, and Skip/Done — so
         // the note contributes nothing up top while it is the walkthrough.
         if isOnboarding {
             ToolbarItem(placement: .topBarTrailing) { EmptyView() }
-        } else if isEditing {
+        } else if isEditing || isTitleFocused {
+            // Undo and redo share one bubble — they are one control with two
+            // directions — and the spacer breaks the glass so Done gets its own
+            // circle beside it.
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                undoButton
+                redoButton
+            }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Done", systemImage: "checkmark") { editorController.endEditing() }
-                    .labelStyle(.iconOnly)
-                    .fontWeight(.semibold)
+                Button {
+                    editorController.endEditing()
+                    isTitleFocused = false
+                } label: {
+                    Label { Text("Done") } icon: { topBarGlyph("checkmark") }
+                }
+                .labelStyle(.iconOnly)
             }
         } else {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                undoButton
+                redoButton
+            }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Delete", systemImage: "trash", role: .destructive) {
                         isConfirmingDelete = true
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis")
+                    Label { Text("More") } icon: { topBarGlyph("ellipsis") }
+                        .labelStyle(.iconOnly)
                 }
             }
         }
@@ -337,37 +534,72 @@ struct SessionDetailView: View {
         }
     }
 
-    /// The attempt joins the session first, then the row is inserted — the inline view
-    /// reads its data straight out of the session as it lays out.
-    private func finishAttempt(id: UUID, captured: CapturedAttempt) {
+    /// A recording becomes an attempt the moment it lands — there is no "save" step.
+    /// The attempt joins the session first, then the row is inserted: the inline view
+    /// reads its data straight out of the session as it lays out. The sheet stays up
+    /// on the attempt's own page, where it can be annotated, retaken or deleted.
+    private func saveAttempt(id: UUID, captured: CapturedAttempt) {
         let attempt = Attempt(id: id)
         attempt.videoFilename = captured.videoFilename
         attempt.thumbnailFilename = captured.thumbnailFilename
         attempt.videoDuration = captured.duration
-        attempt.restSeconds = captured.restSeconds
-        attempt.notes = captured.notes
         attempt.session = session
         session.attempts.append(attempt)
         modelContext.insert(attempt)
 
-        pendingAttemptID = nil
+        // Notes are typed into the page over the next while, so the sheet closing is
+        // what puts them into the document (`closeAttemptSheet`).
+        editedAttemptID = id
+        attemptRestStart = captured.stoppedAt
         // Inserting rebuilds the rows, which also refreshes the heading's now-stale
         // "7 attempts · 3 sessions" line and renumbers the group.
         editorController.insertAttempt(id: id)
-        // Land the user typing on the new line under the row, keyboard and bar up,
-        // as the sheet slides away. UIKit only restores the keyboard by itself when
-        // the note was being edited at present time — asking makes it every time.
-        editorController.focus()
         saveChanges()
+    }
 
-        // The rest began when the recording stopped, so the 2-minute countdown is
-        // backdated by the rest already spent on the review screen. If the whole
-        // window went to reviewing, there's nothing left to count down.
-        if captured.restSeconds < 120 {
-            withAnimation(.smooth(duration: 0.35)) {
-                stopwatch.start(120, from: Date(timeIntervalSinceNow: -captured.restSeconds))
-            }
+    /// Retake and Delete both land here. The attempt was saved the instant it was
+    /// recorded, so taking it back means unwinding all of it — row, record and video.
+    /// Held onto first: pulling the row detaches the attempt from the session before
+    /// the delete gets a look at it.
+    private func discardAttempt(id: UUID) {
+        let doomed = session.attempt(with: id) ?? detached.first { $0.attempt.id == id }?.attempt
+        editorController.removeMarker(for: id)
+        detached.removeAll { $0.attempt.id == id }
+        session.attempts.removeAll { $0.id == id }
+        if let doomed {
+            VideoStore.delete(doomed)
+            modelContext.delete(doomed)
         }
+        editedAttemptID = nil
+        attemptRestStart = nil
+        try? modelContext.save()
+    }
+
+    /// The sheet is gone: the rest this attempt got is however long the page was up,
+    /// counted from the moment the recording stopped, and the notes written on it go
+    /// into the document. Then back to typing under the new row — UIKit only restores
+    /// the keyboard by itself when the note was being edited at present time, so
+    /// asking makes it every time.
+    private func closeAttemptSheet() {
+        if let id = editedAttemptID, let start = attemptRestStart,
+           let attempt = session.attempt(with: id) {
+            attempt.restSeconds = Date().timeIntervalSince(start)
+        }
+        attemptRestStart = nil
+        syncEditedAttempt()
+        editorController.focus()
+    }
+
+    /// Takes a row out of the note from the attempt page itself.
+    ///
+    /// Clearing the edited id is the whole point: the sync that runs when the page is
+    /// dismissed writes that attempt's notes back into the document, and with its row
+    /// gone they land as ordinary text — clip clocks and all — with nothing left to
+    /// bind them to. `discardAttempt` clears it for the same reason.
+    private func removeAttemptRow(id: UUID) {
+        editorController.removeMarker(for: id)
+        editedAttemptID = nil
+        openedAttemptStart = nil
     }
 
     /// Notes written in the sheet are on the attempt already; this is what puts them
@@ -408,7 +640,7 @@ struct SessionDetailView: View {
     /// put the row back and the attempt has to come back whole. A marker that reappears
     /// re-links the attempt it stands for, climb and all.
     private func reconcileAttempts() {
-        let referenced = Set(session.attachmentIDs)
+        let referenced = Set(session.allAttachmentIDs)
 
         for orphan in session.attempts where !referenced.contains(orphan.id) {
             detached.append(DetachedAttempt(attempt: orphan, climb: orphan.climb))

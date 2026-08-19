@@ -22,12 +22,8 @@ enum Goals {
     /// Fixed, so this one note can be found without a column on the model saying so.
     static let id = UUID(uuidString: "5EA71001-0000-4000-A000-000000000002")!
 
-    /// The note's title, which — Apple Notes style — is nothing but its first line.
+    /// The note's title, which sits in the header above its tabs.
     static let title = "Goals"
-
-    /// Empty but for the title: the page is written by onboarding and by the user,
-    /// and starts out saying only what it is.
-    static let bodyText = title
 
     /// What the list shows under the title while nothing has been written yet.
     static let placeholder = "What you're working toward"
@@ -38,7 +34,7 @@ enum Goals {
 
         let goal = ClimbSession()
         goal.id = Self.id
-        goal.bodyText = bodyText
+        goal.title = title
         context.insert(goal)
         try? context.save()
     }

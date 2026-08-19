@@ -59,6 +59,10 @@ enum Tutorial {
             if previousBodies.contains(seeded.bodyText),
                !UserDefaults.standard.bool(forKey: finishedKey) {
                 seeded.bodyText = bodyText
+                // The name went with it: the walkthrough's first step is naming the
+                // workout, so the copy it is handed has to arrive unnamed.
+                seeded.title = ""
+                seeded.didSplitTitle = true
                 seeded.id = id
                 try? context.save()
             }
@@ -78,22 +82,10 @@ enum Tutorial {
         try? context.save()
     }
 
-    /// Throws the practice note away and forgets it was ever seeded, so the next time
-    /// onboarding reaches the walkthrough it arrives at an empty note again. For
-    /// running the flow more than once — see `Onboarding.loopsForDevelopment`.
-    static func reset(in context: ModelContext) {
-        let defaults = UserDefaults.standard
-        defaults.set(false, forKey: seededKey)
-        defaults.set(false, forKey: finishedKey)
-        defaults.set(false, forKey: restKey)
-
-        let existing = (try? context.fetch(FetchDescriptor<ClimbSession>())) ?? []
-        for note in existing where note.id == id {
-            note.attempts.forEach(VideoStore.delete)
-            context.delete(note)
-        }
-        try? context.save()
-    }
+    // There is deliberately no way to un-seed this note. It starts life as the
+    // walkthrough's practice note, but the moment anyone climbs on it it is a note like
+    // any other, and nothing that runs on its own at launch should be able to tell the
+    // difference. Deleting it is the user's to do, from the list, like any other note.
 }
 
 /// Walks the tutorial note through the bar one button at a time: a single instruction

@@ -9,18 +9,26 @@ enum HeadingChevron {
     /// turn anticlockwise once folded. Swapping in `chevron.right` instead would
     /// change the icon's width mid-fold, and everything laid out against its leading
     /// edge — the attempt count on a climb heading — would jump sideways with it.
+    /// Drawn a step fainter than the counts beside it: with a chevron on every
+    /// heading and every row, a column of them at label strength reads as clutter
+    /// down the right edge. Faint enough to fall back, still there when looked for.
     static func icon() -> UIImage {
         let config = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         return UIImage(systemName: "chevron.down", withConfiguration: config)!
-            .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+            .withTintColor(.tertiaryLabel, renderingMode: .alwaysOriginal)
     }
 
     /// The square the chevron turns inside: wide enough for the glyph lying down and
     /// tall enough for it standing up, so the box the rest of the line measures
-    /// against is the same at every angle.
-    private static func side(of icon: UIImage) -> CGFloat {
-        max(icon.size.width, icon.size.height)
-    }
+    /// against is the same at every angle. Public, because the attempt row hangs its
+    /// own chevron in the same column and has to match it.
+    static let side: CGFloat = {
+        let icon = HeadingChevron.icon()
+        return max(icon.size.width, icon.size.height)
+    }()
+
+    /// How long a chevron takes to turn, wherever it is drawn.
+    static let spinDuration: TimeInterval = 0.24
 
     /// Where the chevron sits in a fragment's coordinates: against the text's own
     /// right edge, centred on the first line. The fragment's frame hugs the indented
@@ -30,7 +38,7 @@ enum HeadingChevron {
                      in fragment: NSTextLayoutFragment) -> CGRect {
         let midY = fragment.textLineFragments.first.map(\.typographicBounds.midY)
             ?? fragment.layoutFragmentFrame.height / 2
-        let side = side(of: icon)
+        let side = Self.side
         return CGRect(x: containerWidth - NoteDocument.textIndent - side
                           - fragment.layoutFragmentFrame.minX,
                       y: midY - side / 2,
@@ -47,6 +55,33 @@ enum HeadingChevron {
         context.rotate(by: -.pi / 2 * progress)
         icon.draw(at: CGPoint(x: -icon.size.width / 2, y: -icon.size.height / 2))
         context.restoreGState()
+    }
+}
+
+/// The tally a heading — section or climb — carries at its trailing edge: attempts
+/// filed under a climb, climbs filed under a section. One set of attributes and one
+/// placement for both, so the two lines read as a single column down the note's right
+/// edge rather than two decorations that merely resemble each other.
+enum HeadingCount {
+    static let attributes: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: 13),
+        .foregroundColor: UIColor.secondaryLabel,
+    ]
+
+    /// Right-aligned against the chevron, centred on the heading's line.
+    static func rect(_ text: NSString, before chevron: CGRect,
+                     in fragment: NSTextLayoutFragment) -> CGRect {
+        let size = text.size(withAttributes: attributes)
+        let midY = fragment.textLineFragments.first.map(\.typographicBounds.midY)
+            ?? fragment.layoutFragmentFrame.height / 2
+        return CGRect(x: chevron.minX - 8 - size.width,
+                      y: midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
+    static func draw(_ text: NSString, in rect: CGRect, at origin: CGPoint) {
+        text.draw(at: CGPoint(x: origin.x + rect.minX, y: origin.y + rect.minY),
+                  withAttributes: attributes)
     }
 }
 
@@ -83,6 +118,10 @@ enum HeadingPlaceholder {
 /// section — and draws the fold chevron beside it.
 final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
     var isFolded = false
+    /// Climbs filed under this heading in the note — drawn at the line's trailing
+    /// edge exactly as an attempt count is on a climb, "0 climbs" included, so a
+    /// fresh section reads as one too.
+    var climbCount = 0
     /// How far through its quarter turn the chevron is — 0 open, 1 folded. Set from
     /// `FoldAnimator` when the fragment is vended, so a fold spins rather than snaps.
     var foldProgress: CGFloat = 0
@@ -90,7 +129,11 @@ final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
     /// The heading's text, breaks trimmed. The example shows while it is empty.
     var name: String = ""
 
-    private var example: String { name.isEmpty ? NoteDocument.sectionPlaceholder : "" }
+    private var example: String { name.isEmpty ? NoteDocument.sectionExample : "" }
+
+    private var countText: NSString {
+        (climbCount == 1 ? "1 climb" : "\(climbCount) climbs") as NSString
+    }
 
     private var placeholderRect: CGRect {
         HeadingPlaceholder.rect(example, font: NoteDocument.sectionFont, in: self)
@@ -98,8 +141,10 @@ final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
 
     override var renderingSurfaceBounds: CGRect {
         let icon = HeadingChevron.icon()
+        let chevron = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         return super.renderingSurfaceBounds
-            .union(HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self))
+            .union(chevron)
+            .union(HeadingCount.rect(countText, before: chevron, in: self))
             .union(placeholderRect)
     }
 
@@ -108,6 +153,8 @@ final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
         let icon = HeadingChevron.icon()
         let rect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         HeadingChevron.draw(icon, in: rect, progress: foldProgress, at: point, in: context)
+        HeadingCount.draw(countText, in: HeadingCount.rect(countText, before: rect, in: self),
+                          at: point)
         HeadingPlaceholder.draw(example, font: NoteDocument.sectionFont,
                                 color: .placeholderText, in: placeholderRect, at: point)
         UIGraphicsPopContext()

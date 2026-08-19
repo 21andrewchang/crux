@@ -27,27 +27,12 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
     /// has to clear the pill rather than the text.
     static let inflate: CGFloat = 5
 
-    private static let countAttributes: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 13),
-        .foregroundColor: UIColor.secondaryLabel,
-    ]
-
     private var countText: NSString {
         (attemptCount == 1 ? "1 attempt" : "\(attemptCount) attempts") as NSString
     }
 
-    /// Right-aligned against the chevron, centred on the bubble's line.
-    private func countRect(before chevron: CGRect) -> CGRect {
-        let size = countText.size(withAttributes: Self.countAttributes)
-        let midY = textLineFragments.first.map(\.typographicBounds.midY)
-            ?? layoutFragmentFrame.height / 2
-        return CGRect(x: chevron.minX - 8 - size.width,
-                      y: midY - size.height / 2,
-                      width: size.width, height: size.height)
-    }
-
     /// The example name an empty bubble shows — see `HeadingPlaceholder`.
-    private var example: String { name.isEmpty ? NoteDocument.climbPlaceholder : "" }
+    private var example: String { name.isEmpty ? NoteDocument.climbExample : "" }
 
     private var placeholderRect: CGRect {
         HeadingPlaceholder.rect(example, font: NoteDocument.headerFont, in: self)
@@ -72,7 +57,7 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
         return super.renderingSurfaceBounds
             .union(pillRect)
             .union(chevron)
-            .union(countRect(before: chevron))
+            .union(HeadingCount.rect(countText, before: chevron, in: self))
             .union(placeholderRect)
     }
 
@@ -90,9 +75,8 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
         let icon = HeadingChevron.icon()
         let iconRect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         HeadingChevron.draw(icon, in: iconRect, progress: foldProgress, at: point, in: context)
-        let count = countRect(before: iconRect)
-        countText.draw(at: CGPoint(x: point.x + count.minX, y: point.y + count.minY),
-                       withAttributes: Self.countAttributes)
+        HeadingCount.draw(countText, in: HeadingCount.rect(countText, before: iconRect, in: self),
+                          at: point)
         // The name's own colour, faded — the example has to stay readable on the fill
         // it sits on, which `placeholderText` is too thin to manage inside the pill.
         HeadingPlaceholder.draw(example, font: NoteDocument.headerFont,

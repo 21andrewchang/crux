@@ -9,6 +9,22 @@ import UIKit
 /// optically balanced against the others.
 let barGlyphPointSize: CGFloat = 22
 
+/// The size the navigation bar's own marks are drawn at. The bar will not take a
+/// `.font` on a `systemImage` item — it re-applies its own metric on top — so the
+/// corner's marks are handed over as finished rasters at this size instead, the same
+/// trick `barGlyph` plays on the bottom bar.
+let topBarGlyphPointSize: CGFloat = 15
+
+func topBarGlyph(_ name: String) -> Image {
+    Image(uiImage: topBarGlyphImage(name))
+}
+
+/// The raster behind it — what `UINavigationBar`'s back indicator needs, since that
+/// one is set as an image rather than built as a button.
+func topBarGlyphImage(_ name: String) -> UIImage {
+    barGlyphImage(name, pointSize: topBarGlyphPointSize)
+}
+
 /// A glyph rendered through UIKit's symbol configuration, so the raster matches
 /// the system bottom bar pixel for pixel — and so the real bar and the keyboard
 /// clone draw from the identical raster, which is what keeps the swap seamless.
@@ -18,7 +34,7 @@ func barGlyph(_ name: String, pointSize: CGFloat = barGlyphPointSize) -> Image {
 
 /// The raster behind `barGlyph`, before SwiftUI gets hold of it — the system bar
 /// needs the `UIImage` itself so it can fade the mark into it (see `systemBarGlyph`).
-private func barGlyphImage(_ name: String, pointSize: CGFloat) -> UIImage {
+func barGlyphImage(_ name: String, pointSize: CGFloat) -> UIImage {
     let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
     let image = UIImage(systemName: name, withConfiguration: config) ?? UIImage()
     return image.withRenderingMode(.alwaysTemplate)
@@ -513,6 +529,10 @@ struct TimerCapsule: View {
     /// Darkened out and deaf to taps while the tutorial's walkthrough is running —
     /// the same treatment the bar's other buttons get before their step arrives.
     var isLocked = false
+    /// False where the capsule is a pure readout: the attempt sheet shows the same
+    /// clock, but its duration panel is hosted by the page underneath, so a tap
+    /// there would grow the panel behind the sheet.
+    var isInteractive = true
 
     var body: some View {
         Button {
@@ -533,7 +553,7 @@ struct TimerCapsule: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
         .animation(.smooth(duration: 0.35), value: stopwatch.hasStarted)
-        .allowsHitTesting(!isLocked)
+        .allowsHitTesting(isInteractive && !isLocked)
         .animation(.smooth(duration: 0.35), value: isLocked)
     }
 }

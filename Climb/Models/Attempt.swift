@@ -16,6 +16,11 @@ final class Attempt {
     var restSeconds: TimeInterval = 0
     var notes: String = ""
 
+    /// How hard it felt, as `Effort.rawValue` — `Effort.unrated` until it is answered
+    /// on the attempt page. Stored as the raw number so an attempt written before the
+    /// question existed reads as unrated rather than failing to load.
+    var effortRaw: Int = Effort.unrated
+
     var session: ClimbSession?
 
     /// Stamped when the row was deleted from its note. The record and its video stay —
@@ -33,6 +38,13 @@ final class Attempt {
 
     var videoURL: URL? {
         videoFilename.map { VideoStore.directory.appendingPathComponent($0) }
+    }
+
+    /// The rating, as the four words it is asked in. Setting it to nothing clears it,
+    /// which is how a mis-tap is taken back.
+    var effort: Effort? {
+        get { Effort.stored(effortRaw) }
+        set { effortRaw = newValue?.rawValue ?? Effort.unrated }
     }
 
     var thumbnailURL: URL? {

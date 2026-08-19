@@ -29,12 +29,20 @@ struct RootView: View {
         // The goal note exists from the first launch onward, whatever phase this one
         // opens in: onboarding writes into it before the list is ever reached.
         .task { Goals.seedIfNeeded(into: modelContext) }
-        // Launched with `-resetOnboarding`, the first run starts over: quiz at the
-        // first question, practice note thrown away. Only what onboarding owns — the
-        // user's own sessions are not part of it and are not touched.
+        // What the App Store says is owned, asked for once at launch and then listened
+        // for. Both halves matter: without the refresh a subscriber is locked out of
+        // their own sessions until they buy again, and without the listener a lapsed
+        // subscription keeps working until the app is next relaunched.
+        .task {
+            Store.shared.watchForChanges()
+            await Store.shared.refresh()
+        }
+        // Launched with `-resetOnboarding`, the first run starts over at the first
+        // question. It moves where you are in the flow and nothing else: no note, no
+        // attempt and no video is touched by it, so walking onboarding again is never a
+        // thing that can cost you anything.
         .task {
             guard ProcessInfo.processInfo.arguments.contains("-resetOnboarding") else { return }
-            Tutorial.reset(in: modelContext)
             onboarding.reset()
         }
         .fullScreenCover(isPresented: .constant(onboarding.phase == .paywall)) {
@@ -43,14 +51,14 @@ struct RootView: View {
     }
 
     /// The last tap of the flow: into the app, or — while onboarding is what is being
-    /// worked on — back to the top of it with the practice note wiped, so the next
-    /// pass is the same first run this one was.
+    /// worked on — back to the top of it for another pass. The practice note carries
+    /// over from the last pass rather than being wiped for the next one; a debug loop
+    /// is not a good enough reason for the app to throw a note away by itself.
     private func finishPaywall() {
         guard Onboarding.loopsForDevelopment else {
             onboarding.finishPaywall()
             return
         }
-        Tutorial.reset(in: modelContext)
         onboarding.reset()
     }
 }
@@ -87,9 +95,11 @@ private struct TutorialHost: View {
     @ToolbarContentBuilder
     private var corners: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Back", systemImage: "chevron.left") {
+            Button {
                 dismissKeyboard()
                 onboarding.backToQuiz()
+            } label: {
+                Label { Text("Back") } icon: { topBarGlyph("chevron.backward") }
             }
             .labelStyle(.iconOnly)
         }
@@ -117,3 +127,4 @@ private struct TutorialHost: View {
                                         to: nil, from: nil, for: nil)
     }
 }
+

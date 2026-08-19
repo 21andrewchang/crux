@@ -30,4 +30,15 @@ enum Haptics {
     static func warmUp() {
         heavy.prepare()
     }
+
+    /// Kept warm for the same reason as the knock above: the pills are tapped in
+    /// quick succession, and the first of a run must feel like the rest.
+    private static let selector = UISelectionFeedbackGenerator()
+
+    /// Something has been picked out of a row of choices — turning to a page of the
+    /// note. The lightest tap there is: a page turn is a move, not an achievement.
+    static func selection() {
+        selector.selectionChanged()
+        selector.prepare()
+    }
 }

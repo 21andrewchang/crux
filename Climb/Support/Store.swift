@@ -10,6 +10,7 @@ import StoreKit
 /// the review guidelines will not take it for this. So Continue opens the App Store's
 /// purchase sheet, which is the thing people mean by paying with Apple.
 @Observable
+@MainActor
 final class Store {
     static let shared = Store()
 
@@ -41,6 +42,39 @@ final class Store {
     /// are not set up yet, which is the difference between "the purchase failed" and
     /// "there is no purchase to make".
     var isConfigured: Bool { !products.isEmpty }
+
+    /// Whether the subscription is live, as something a view body can read.
+    /// `isSubscribed` below walks the entitlements and so can only be awaited, and a
+    /// body cannot await; this is that same answer kept current — at launch, after a
+    /// purchase, and whenever the App Store sends a change of its own.
+    ///
+    /// It starts false, so the one frame before the first refresh lands looks like
+    /// not-subscribed. That is the safe direction for a paywall to be wrong in for a
+    /// frame: the gate is on making a *new* session, never on reading an existing one,
+    /// so the worst it can do is briefly offer a subscription to somebody who has one.
+    private(set) var isPro = false
+
+    /// Brings `isPro` back in line with what the App Store says is owned.
+    func refresh() async {
+        isPro = await isSubscribed
+    }
+
+    /// Watches for the entitlement changes the app never asks for: a renewal, a lapse,
+    /// a refund, or a purchase made on the user's other phone. Without this the
+    /// entitlement is only ever as fresh as the last launch. Safe to call more than
+    /// once — the second call is a no-op rather than a second listener.
+    func watchForChanges() {
+        guard updates == nil else { return }
+        updates = Task { [weak self] in
+            for await update in Transaction.updates {
+                guard case let .verified(transaction) = update else { continue }
+                await transaction.finish()
+                await self?.refresh()
+            }
+        }
+    }
+
+    private var updates: Task<Void, Never>?
 
     private init() {}
 
@@ -106,6 +140,7 @@ final class Store {
                 // reads from here on, and an unfinished transaction comes back at
                 // every launch.
                 await transaction.finish()
+                isPro = true
                 return true
             case .userCancelled:
                 return false
@@ -128,7 +163,8 @@ final class Store {
         isPurchasing = true
         defer { isPurchasing = false }
         try? await AppStore.sync()
-        if await isSubscribed { return true }
+        await refresh()
+        if isPro { return true }
         failure = "Nothing to restore on this Apple Account."
         return false
     }

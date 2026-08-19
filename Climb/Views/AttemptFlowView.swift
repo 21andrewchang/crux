@@ -1,28 +1,40 @@
 import AVKit
 import SwiftUI
 
-/// What the flow hands back once the user finishes an attempt.
+/// What the flow hands back the moment a recording lands — the attempt is saved
+/// there and then, not on a button.
 struct CapturedAttempt {
     var videoFilename: String
     var thumbnailFilename: String?
     var duration: TimeInterval
-    var restSeconds: TimeInterval
-    var notes: String
+    /// When the recording stopped: what the rest clock — and the rest written onto
+    /// the attempt when the page closes — counts from.
+    var stoppedAt: Date
 }
 
-/// Record → stop (rest timer starts) → review and annotate → finish.
+/// Record → stop (the attempt saves itself, the rest timer starts) → the ordinary
+/// attempt page, where it can be annotated, retaken, or deleted.
 struct AttemptFlowView: View {
     let attemptID: UUID
     let ordinal: Int
     /// The climb the attempt will belong to; nil when it lands outside any climb.
     var climbName: String? = nil
-    var onFinish: (CapturedAttempt) -> Void
-    var onCancel: () -> Void
+    /// The app's one rest clock, started here the moment the recording stops and
+    /// shown counting down on the page that follows.
+    var stopwatch: StopwatchModel
+    /// The saved attempt, looked up once the recording has been ingested.
+    var attempt: () -> Attempt?
+    /// Saves the recording as an attempt. Called straight off the camera.
+    var onCapture: (CapturedAttempt) -> Void
+    /// Unwinds that save — row, record and video — for both Retake and Delete.
+    var onDiscard: () -> Void
+    /// Closes the sheet, keeping whatever is saved.
+    var onClose: () -> Void
 
     private enum Phase: Equatable {
         case capture
         case processing
-        case review(video: String, thumbnail: String?, duration: TimeInterval, restStart: Date)
+        case review
     }
 
     @StateObject private var capture = CaptureController()
@@ -36,29 +48,37 @@ struct AttemptFlowView: View {
             case .processing:
                 Color.black.ignoresSafeArea()
                 ProgressView().controlSize(.large).tint(.white)
-            case let .review(video, thumbnail, duration, restStart):
-                AttemptReviewView(
-                    ordinal: ordinal,
-                    climbName: climbName,
-                    videoFilename: video,
-                    thumbnailFilename: thumbnail,
-                    duration: duration,
-                    restStart: restStart,
-                    onFinish: onFinish,
-                    onRetake: {
-                        try? FileManager.default.removeItem(
-                            at: VideoStore.directory.appendingPathComponent(video))
-                        phase = .capture
-                    },
-                    onDiscard: onCancel
-                )
+            case .review:
+                // The same page an attempt opens to from the note, over the attempt
+                // that was just saved — plus the controls that only a fresh take has.
+                if let attempt = attempt() {
+                    AttemptDetailView(
+                        attempt: attempt,
+                        ordinal: ordinal,
+                        climbName: climbName,
+                        autoplays: true,
+                        stopwatch: stopwatch,
+                        actions: AttemptActions(
+                            onRetake: {
+                                onDiscard()
+                                phase = .capture
+                            },
+                            onDelete: {
+                                onDiscard()
+                                onClose()
+                            },
+                            isFreshTake: true
+                        ),
+                        onDone: onClose
+                    )
+                }
             }
         }
         .animation(.smooth(duration: 0.3), value: phase)
-        // Swiping the sheet away is fine while nothing is on the line — the idle
-        // camera. Mid-recording, processing, or on review it would silently trash
-        // the take, so there the ✕ (which confirms) is the only way out.
-        .interactiveDismissDisabled(!(phase == .capture && capture.status != .recording))
+        // Swiping the sheet away is fine wherever nothing is on the line: the idle
+        // camera, and the review page, where the attempt is already saved. Only a
+        // recording in flight — or the ingest right after it — holds the sheet.
+        .interactiveDismissDisabled(phase == .processing || capture.status == .recording)
         .task {
             capture.onFinish = { url, stoppedAt in
                 ingest(url: url, stoppedAt: stoppedAt)
@@ -108,7 +128,7 @@ struct AttemptFlowView: View {
             HStack {
                 Button {
                     capture.teardown()
-                    onCancel()
+                    onClose()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 17, weight: .bold))
@@ -244,16 +264,24 @@ struct AttemptFlowView: View {
         .foregroundStyle(.white.opacity(0.7))
     }
 
-    /// Moves the recording into permanent storage and flips to review. The rest timer
-    /// runs from `stoppedAt` — the moment the user hit stop, not the moment ingest ends.
+    /// Moves the recording into permanent storage, saves it as an attempt, and shows
+    /// the attempt's own page over it. The rest timer runs from `stoppedAt` — the
+    /// moment the user hit stop, not the moment ingest ends — so the countdown the
+    /// page opens on is already the real one.
     private func ingest(url: URL, stoppedAt: Date) {
         Task {
             let result = await VideoStore.ingest(recordingAt: url, attemptID: attemptID)
             await MainActor.run {
-                phase = .review(video: result.video,
-                                thumbnail: result.thumbnail,
-                                duration: result.duration,
-                                restStart: stoppedAt)
+                onCapture(CapturedAttempt(
+                    videoFilename: result.video,
+                    thumbnailFilename: result.thumbnail,
+                    duration: result.duration,
+                    stoppedAt: stoppedAt
+                ))
+                withAnimation(.smooth(duration: 0.35)) {
+                    stopwatch.start(120, from: stoppedAt)
+                }
+                phase = .review
             }
         }
     }
@@ -265,82 +293,5 @@ private struct ShutterButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.92 : 1)
             .animation(.snappy(duration: 0.16), value: configuration.isPressed)
-    }
-}
-
-/// The same attempt screen as the replay page, plus a Finish button. The rest clock
-/// still runs from `restStart` — it's recorded on finish, just not shown for now.
-private struct AttemptReviewView: View {
-    let ordinal: Int
-    let climbName: String?
-    let videoFilename: String
-    let thumbnailFilename: String?
-    let duration: TimeInterval
-    let restStart: Date
-    var onFinish: (CapturedAttempt) -> Void
-    var onRetake: () -> Void
-    var onDiscard: () -> Void
-
-    @State private var notes: String = ""
-    @State private var isConfirmingDiscard = false
-    @State private var controller = AttemptPlayerController()
-
-    private var videoURL: URL { VideoStore.directory.appendingPathComponent(videoFilename) }
-
-    var body: some View {
-        AttemptPlayerView(
-            videoURL: videoURL,
-            duration: duration,
-            notes: $notes,
-            autoplays: true,
-            controller: controller
-        ) {
-            HStack(spacing: 12) {
-                // Retake trashes this take and drops straight back to the camera —
-                // no confirmation, since asking again is the whole point of the tap.
-                Button(action: onRetake) {
-                    Image(systemName: "arrow.counterclockwise")
-                        .font(.system(size: 19, weight: .semibold))
-                        .frame(width: 50, height: 50)
-                }
-                .buttonStyle(.glass)
-
-                Button {
-                    controller.commitDraft()
-                    onFinish(CapturedAttempt(
-                        videoFilename: videoFilename,
-                        thumbnailFilename: thumbnailFilename,
-                        duration: duration,
-                        restSeconds: Date().timeIntervalSince(restStart),
-                        notes: notes
-                    ))
-                } label: {
-                    Text("Finish Attempt")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                }
-                .buttonStyle(.glassProminent)
-                .tint(.white)
-            }
-        }
-        .overlay(alignment: .top) {
-            AttemptTopBar(
-                title: climbName ?? "Attempt \(ordinal)",
-                subtitle: climbName != nil ? "Attempt \(ordinal)" : nil
-            ) { isConfirmingDiscard = true }
-        }
-        // Closing the review is discarding the take — the recording only becomes
-        // an attempt through "Finish Attempt" — so the ✕ double-checks.
-        .alert("Delete this attempt?", isPresented: $isConfirmingDiscard) {
-            Button("Cancel", role: .cancel) { }
-            Button("Delete", role: .destructive) {
-                try? FileManager.default.removeItem(at: videoURL)
-                onDiscard()
-            }
-        } message: {
-            Text("The video will be deleted.")
-        }
     }
 }
