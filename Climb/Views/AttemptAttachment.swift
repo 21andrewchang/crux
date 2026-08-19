@@ -41,7 +41,7 @@ final class AttemptAttachment: NSTextAttachment, MarkerAttachment {
     var markerID: UUID { attemptID }
     var takesNotes: Bool { true }
 
-    static let rowHeight: CGFloat = 74
+    static let rowHeight: CGFloat = 64
 
     init(attemptID: UUID) {
         self.attemptID = attemptID
@@ -119,24 +119,30 @@ final class AttemptRowView: UIView {
     var onTap: (() -> Void)?
     var onToggleFold: (() -> Void)?
 
-    /// Barely off black — just enough separation from the page to read as a card. The
-    /// notes written under the row are drawn on the same ground by
-    /// `BookmarkLayoutFragment`, so the row and its notes read as one box.
-    static let cardFill = UIColor(white: 0.04, alpha: 1)
+    /// A dark dark grey — a step off the page, nowhere near a light card. The notes
+    /// written under the row are drawn on the same ground by `BookmarkLayoutFragment`,
+    /// so the row and its notes read as one box.
+    static let cardFill = UIColor(white: 0.085, alpha: 1)
     static let cardRadius: CGFloat = 14
+    /// How far the card reaches past the text column on each side: out into the page's
+    /// own margin. The box is what steps out, so nothing written inside it has to step
+    /// in — the name, the dot on the heading above it and every line of prose in the
+    /// note keep the one left edge they have.
+    static let cardBleed: CGFloat = 12
 
-    static let thumbnailInset: CGFloat = 8
-    static let thumbnailSide: CGFloat = 46
+    static let thumbnailInset: CGFloat = NoteDocument.textIndent
+    /// The gap between the name and the rating under it. Read by the video too: it is
+    /// squared off the pair of lines beside it, so the three edges line up.
+    static let lineGap: CGFloat = 6
     /// The gap between the name and the video at the other end of the row.
     static let labelGap: CGFloat = 14
-    /// Where the row's name starts: the same left edge as every other name in the
-    /// note, and the edge the notes' words hang from, so a clip's text and the
-    /// attempt's name read down one line.
+    /// Where the row's name starts: the page's own margin, the same left edge every
+    /// other line of the note hangs from, so a clip's text and the attempt's name
+    /// read down one line.
     static let textColumn: CGFloat = NoteDocument.textIndent
     /// Where the bookmarks on the note lines below start. Its left edge, not its
-    /// middle: the video is no longer over that lane, so the mark stands on the card's
-    /// own left edge — flush with the "A" of the name above it — and the words of the
-    /// clip step past it.
+    /// middle: the mark stands flush with the "A" of the name above it, and the words
+    /// of the clip step past it.
     static let glyphLeading: CGFloat = textColumn
 
     private let container = UIView()
@@ -147,7 +153,10 @@ final class AttemptRowView: UIView {
     private let thumbnailView = UIImageView()
     private let playGlyph = UIImageView(image: UIImage(systemName: "play.fill"))
     private let titleLabel = UILabel()
+    /// The rating, worn as a tinted tag — the chip a climb heading used to wear.
+    private let effortPill = TagPillLabel()
     private let detailLabel = UILabel()
+    private lazy var detailRow = UIStackView(arrangedSubviews: [effortPill, detailLabel])
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -158,16 +167,23 @@ final class AttemptRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func buildHierarchy() {
-        // The row reads as the head of one box: a near-black card with the name on the
-        // card's own left edge, where every other name in the note starts, and the
-        // video held at the far end. The notes themselves are drawn on the same ground
-        // below, so the whole thing is one card.
+        // The row reads as the head of one box: a card in the page's own margin with
+        // the name on the same left edge every other name in the note starts from, and
+        // the video held at the far end. The notes are drawn on the same ground below,
+        // so the whole thing is one card.
         container.backgroundColor = Self.cardFill
         container.layer.cornerRadius = Self.cardRadius
         container.layer.cornerCurve = .continuous
         container.translatesAutoresizingMaskIntoConstraints = false
         addSubview(container)
 
+        // The frame it is given is the whole of its size: a still off a 1080p video
+        // has an intrinsic size in the thousands, and left able to argue for it the
+        // image view pushes the labels it is squared against apart instead.
+        thumbnailView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        thumbnailView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        thumbnailView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        thumbnailView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         thumbnailView.contentMode = .scaleAspectFill
         thumbnailView.clipsToBounds = true
         thumbnailView.backgroundColor = UIColor.white.withAlphaComponent(0.1)
@@ -185,67 +201,66 @@ final class AttemptRowView: UIView {
         container.addSubview(playGlyph)
 
         // The name carries the row — it is what you read to find the attempt you
-        // want; the length beside it is a detail you check once. It reads a step above
-        // the notes under it (body, 17) because the row is the head of that block.
-        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        // want; the length beside it is a detail you check once. The bottom rung of
+        // the note's three: a step under the climb heading it is filed under, and a
+        // step over the notes written below it.
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
         titleLabel.textColor = .label
+        // The name is exactly as tall as one line of it — it, not the video beside it,
+        // is what sets the height the two share.
+        titleLabel.setContentHuggingPriority(.required, for: .vertical)
+        titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(titleLabel)
+
+        // How hard it was leads the line, worn as a tag — the thing you scan a
+        // session for. The length follows it as the detail you check once you have
+        // found the go you wanted.
+        effortPill.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         detailLabel.font = .systemFont(ofSize: 13)
         detailLabel.textColor = .secondaryLabel
         detailLabel.numberOfLines = 1
-        detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(detailLabel)
+
+        detailRow.axis = .horizontal
+        detailRow.alignment = .center
+        detailRow.spacing = 8
+        detailRow.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(detailRow)
 
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -Self.cardBleed),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: Self.cardBleed),
             container.topAnchor.constraint(equalTo: topAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            thumbnailView.trailingAnchor.constraint(equalTo: container.trailingAnchor,
+            thumbnailView.trailingAnchor.constraint(equalTo: trailingAnchor,
                                                     constant: -Self.thumbnailInset),
-            thumbnailView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            thumbnailView.widthAnchor.constraint(equalToConstant: Self.thumbnailSide),
-            thumbnailView.heightAnchor.constraint(equalToConstant: Self.thumbnailSide),
+            // Squared off the two lines beside it: the video's top edge is the name's,
+            // its bottom edge the rating's, and its width follows its height — so the
+            // block of text and the block of picture are the same object seen twice.
+            thumbnailView.topAnchor.constraint(equalTo: titleLabel.topAnchor),
+            thumbnailView.bottomAnchor.constraint(equalTo: detailRow.bottomAnchor),
+            thumbnailView.widthAnchor.constraint(equalTo: thumbnailView.heightAnchor),
 
             playGlyph.centerXAnchor.constraint(equalTo: thumbnailView.centerXAnchor),
             playGlyph.centerYAnchor.constraint(equalTo: thumbnailView.centerYAnchor),
 
-            titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor,
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor,
                                                 constant: Self.textColumn),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
                                                  constant: -Self.labelGap),
             // Title sits just above center so the pair of labels reads as one centered block.
-            titleLabel.bottomAnchor.constraint(equalTo: container.centerYAnchor, constant: 2),
+            titleLabel.bottomAnchor.constraint(equalTo: centerYAnchor, constant: 2),
 
-            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
-                                                  constant: -Self.labelGap),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            detailRow.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailRow.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
+                                                constant: -Self.labelGap),
+            detailRow.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: Self.lineGap),
+            // Held at the tag's own height whether or not there is a tag on it, so an
+            // unrated attempt's video is the same square as a rated one's.
+            detailRow.heightAnchor.constraint(equalToConstant: TagPillLabel.height),
         ])
-    }
-
-    /// How far back the rating is held on a row — one number for the dot and the word,
-    /// so they can never drift apart.
-    private static let effortAlpha: CGFloat = 0.8
-
-    /// The scale's colour as a small filled circle, sitting on the words' baseline —
-    /// the same mark the picker puts beside each choice, shrunk to a detail.
-    private static func dot(_ effort: Effort, on font: UIFont) -> NSAttributedString {
-        let configuration = UIImage.SymbolConfiguration(pointSize: 7, weight: .black)
-        guard let image = UIImage(systemName: "circle.fill", withConfiguration: configuration)?
-            .withTintColor(effort.uiColor.withAlphaComponent(effortAlpha), renderingMode: .alwaysOriginal)
-        else { return NSAttributedString() }
-
-        let attachment = NSTextAttachment()
-        attachment.image = image
-        attachment.bounds = CGRect(x: 0,
-                                   y: (font.capHeight - image.size.height) / 2,
-                                   width: image.size.width,
-                                   height: image.size.height)
-        return NSAttributedString(attachment: attachment)
     }
 
     /// A tap somewhere on this row, in the row's own coordinates.
@@ -282,40 +297,60 @@ final class AttemptRowView: UIView {
     }
 
     func configure(with snapshot: AttemptSnapshot) {
-        // Name plus the video's length — the notes are the quote on the line below,
-        // in the document itself.
+        // Name, rating, and how many clips were cut out of the take — the clips
+        // themselves are the lines under the row, in the document itself.
         titleLabel.text = "Attempt \(snapshot.ordinal)"
-        detailLabel.attributedText = Self.detail(for: snapshot)
+        effortPill.show(snapshot.effort)
+        let clips = NoteTimestamp.clips(in: snapshot.notes).count
+        detailLabel.text = clips == 1 ? "1 Clip" : "\(clips) Clips"
         thumbnailView.image = snapshot.thumbnail
         playGlyph.isHidden = snapshot.thumbnail == nil
     }
 
-    /// The length, and — once it has been answered — how hard it was, carrying the
-    /// colour it was picked in. Scanning a session for the goes that cost something is
-    /// the whole reason the rating is asked, so it reads off the row itself rather than
-    /// only inside the attempt.
-    private static func detail(for snapshot: AttemptSnapshot) -> NSAttributedString {
-        let font = UIFont.systemFont(ofSize: 13)
-        let text = NSMutableAttributedString()
+}
 
-        // How hard it was leads the line: it is the thing you scan a session for, and
-        // the length is the detail you check once you have found the go you wanted.
-        if let effort = snapshot.effort {
-            text.append(dot(effort, on: font))
-            text.append(NSAttributedString(
-                string: " " + effort.label,
-                // The same colour as the dot, exactly — the two are one mark, and held
-                // back together so neither shouts over the video beside them.
-                attributes: [.font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                             .foregroundColor: effort.uiColor.withAlphaComponent(effortAlpha)]))
-            text.append(NSAttributedString(
-                string: "  ·  ",
-                attributes: [.font: font, .foregroundColor: UIColor.tertiaryLabel]))
-        }
+/// A word in a tinted capsule: the tag a climb heading used to wear, now the rating's.
+/// Nothing but a label with room held around its text.
+final class TagPillLabel: UILabel {
+    private static let insets = UIEdgeInsets(top: 3, left: 9, bottom: 3, right: 9)
+    private static let pillFont = UIFont.systemFont(ofSize: 12, weight: .semibold)
 
-        text.append(NSAttributedString(
-            string: "\(snapshot.duration.clockString) video",
-            attributes: [.font: font, .foregroundColor: UIColor.secondaryLabel]))
-        return text
+    /// What the tag stands at, text or no text — the row squares its video off this.
+    static let height = ceil(pillFont.lineHeight) + insets.top + insets.bottom
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        font = Self.pillFont
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The rating, in its own colour on a wash of it. Unanswered it still stands
+    /// there, saying so in grey — the question is part of what a row is, and a row
+    /// that simply left it out gave no sign there was anything to answer.
+    func show(_ effort: Effort?) {
+        text = effort?.label ?? "Effort"
+        let tint = effort?.uiColor ?? .systemGray
+        textColor = effort == nil ? .secondaryLabel : tint
+        backgroundColor = tint.withAlphaComponent(effort == nil ? 0.14 : 0.22)
+    }
+
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: Self.insets))
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let size = super.intrinsicContentSize
+        return CGSize(width: size.width + Self.insets.left + Self.insets.right,
+                      height: size.height + Self.insets.top + Self.insets.bottom)
+    }
+
+    /// A capsule, not a rounded box: a continuous curve at half the height reads as a
+    /// squircle, so the ends are drawn circular and the radius follows the height.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerCurve = .circular
+        layer.cornerRadius = bounds.height / 2
+        layer.masksToBounds = true
     }
 }

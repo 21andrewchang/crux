@@ -1,14 +1,15 @@
 import UIKit
 
-/// Draws the bubble behind a climb heading line: a tinted pill hugging the name, the
-/// same chip the old heading row drew — but the name is now just text in the note,
+/// Draws the mark on a climb heading line: a filled circle in the climb's colour,
+/// standing in the gutter before the name — the colour said once, quietly, instead of
+/// a chip wrapped around the whole heading. The name is plain text in the note,
 /// edited in place like anything else.
 ///
 /// Drawn inside the fragment's own rendering pass rather than as a view positioned
-/// over the text, so whatever moves the text carries the bubble with it.
+/// over the text, so whatever moves the text carries the dot with it.
 final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
-    /// The heading's text, breaks trimmed — measured for the pill's width and already
-    /// reflected in `tint` by whoever vended the fragment.
+    /// The heading's text, breaks trimmed — already reflected in `tint` by whoever
+    /// vended the fragment.
     var name: String = ""
     var tint: UIColor = ClimbTint.fallback
     /// A climb heading folds like a section: chevron at the trailing edge, group
@@ -19,66 +20,65 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
     var foldProgress: CGFloat = 0
     var containerWidth: CGFloat = 0
     /// Attempts recorded under this heading in the note — drawn plain at the line's
-    /// trailing edge, "0 attempts" included, so a fresh bubble reads as one too.
+    /// trailing edge, "0 attempts" included, so a fresh heading reads as one too.
     var attemptCount = 0
 
-    /// How far the pill swells past the text on each side. Read by the editor too:
-    /// the bubble draws lower than its line does, so anything measured under the line
-    /// has to clear the pill rather than the text.
-    static let inflate: CGFloat = 5
+    /// The colour dot before the name, and the lane held open for it. The dot stands
+    /// on the note's own left edge — flush with the "A" of an attempt row's name — and
+    /// the heading's words start a clear step past it, the same way a bookmark sits
+    /// before the words of a clip.
+    static let dotSide: CGFloat = 14
+    static let dotGutter: CGFloat = dotSide + 9
 
     private var countText: NSString {
         (attemptCount == 1 ? "1 attempt" : "\(attemptCount) attempts") as NSString
     }
 
-    /// The example name an empty bubble shows — see `HeadingPlaceholder`.
+    /// The example name an empty heading shows — see `HeadingPlaceholder`.
     private var example: String { name.isEmpty ? NoteDocument.climbExample : "" }
 
     private var placeholderRect: CGRect {
         HeadingPlaceholder.rect(example, font: NoteDocument.headerFont, in: self)
     }
 
-    private var pillRect: CGRect {
+    /// Centred on the name's own capitals rather than on its line box, so the dot
+    /// reads as the first mark of the heading and not as something floating beside it.
+    private var dotRect: CGRect {
         guard let line = textLineFragments.first else { return .null }
-        let bounds = line.typographicBounds
-        // An empty bubble is sized to the example name it is showing, so the pill
-        // doesn't jump as the first characters land in it.
-        let textWidth = HeadingPlaceholder.width(of: name.isEmpty ? example : name,
-                                                 font: NoteDocument.headerFont)
-        return CGRect(x: -layoutFragmentFrame.minX,
-                      y: bounds.minY - Self.inflate,
-                      width: textWidth + NoteDocument.textIndent * 2,
-                      height: bounds.height + Self.inflate * 2)
+        let font = NoteDocument.headerFont
+        let baseline = line.typographicBounds.minY + line.glyphOrigin.y
+        return CGRect(x: NoteDocument.textIndent - layoutFragmentFrame.minX,
+                      y: baseline - font.capHeight / 2 - Self.dotSide / 2,
+                      width: Self.dotSide,
+                      height: Self.dotSide)
     }
 
     override var renderingSurfaceBounds: CGRect {
         let icon = HeadingChevron.icon()
         let chevron = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         return super.renderingSurfaceBounds
-            .union(pillRect)
+            .union(dotRect)
             .union(chevron)
             .union(HeadingCount.rect(countText, before: chevron, in: self))
             .union(placeholderRect)
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
-        let rect = pillRect
+        let rect = dotRect
         UIGraphicsPushContext(context)
         if !rect.isNull {
-            let path = UIBezierPath(roundedRect: rect.offsetBy(dx: point.x, dy: point.y),
-                                    cornerRadius: rect.height / 2)
-            // Same recipe as the old chip: a fill that carries the colour without
-            // shouting it, under text drawn in the colour itself.
-            tint.withAlphaComponent(0.22).setFill()
-            path.fill()
+            // The colour at full strength: it is one small mark now, and a wash of it
+            // this size would read as grey.
+            tint.setFill()
+            UIBezierPath(ovalIn: rect.offsetBy(dx: point.x, dy: point.y)).fill()
         }
         let icon = HeadingChevron.icon()
         let iconRect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
         HeadingChevron.draw(icon, in: iconRect, progress: foldProgress, at: point, in: context)
         HeadingCount.draw(countText, in: HeadingCount.rect(countText, before: iconRect, in: self),
                           at: point)
-        // The name's own colour, faded — the example has to stay readable on the fill
-        // it sits on, which `placeholderText` is too thin to manage inside the pill.
+        // The name's own colour, faded — the example says what the line would say,
+        // in the colour the name it stands for would be written in.
         HeadingPlaceholder.draw(example, font: NoteDocument.headerFont,
                                 color: tint.withAlphaComponent(0.5),
                                 in: placeholderRect, at: point)

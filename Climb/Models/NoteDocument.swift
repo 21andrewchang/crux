@@ -63,10 +63,13 @@ enum NoteDocument {
     /// only, never serialized, so a reopened note starts unfolded.
     static let foldedHeading = NSAttributedString.Key("climbFoldedHeading")
 
-    static let headerFont = UIFont.systemFont(ofSize: 16, weight: .semibold)
+    /// A step under the section above it, a step over the attempts under it: the note
+    /// reads section, climb, attempt, and each rung is smaller and lighter than the
+    /// one it hangs off. Short of the section's bold — that weight is the section's.
+    static let headerFont = UIFont.systemFont(ofSize: 20, weight: .semibold)
 
     /// Trailing room held open on a climb heading's line for the attempt count drawn
-    /// between the bubble and the fold chevron.
+    /// between the name and the fold chevron.
     static let countReserve: CGFloat = 72
 
     /// The room a heading keeps under itself, before the first line of what it heads:
@@ -82,19 +85,16 @@ enum NoteDocument {
     /// begins.
     static let climbHeadingLead: CGFloat = 14
 
-    /// The name reads in the climb's colour; the bubble behind it is drawn by the
-    /// layout fragment, which swells past the line by `inflate` above and below. That
-    /// swell is paid for out of the paragraph's own spacing — held open above so the
-    /// bubble clears the line before it, and added under `headingSpacing` below — so
-    /// what shows between the bubble and its neighbours is the same gap a section
-    /// heading leaves.
+    /// The name reads in the climb's colour, with a dot of that colour drawn before it
+    /// by the layout fragment. The line holds a lane open for the dot the same way a
+    /// stamped note line holds one for its bookmark.
     static func headerAttributes(tint: UIColor) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        paragraph.paragraphSpacingBefore = ClimbHeaderLayoutFragment.inflate + climbHeadingLead
-        paragraph.paragraphSpacing = headingSpacing + ClimbHeaderLayoutFragment.inflate
-        paragraph.firstLineHeadIndent = textIndent
-        paragraph.headIndent = textIndent
+        paragraph.paragraphSpacingBefore = climbHeadingLead
+        paragraph.paragraphSpacing = headingSpacing
+        paragraph.firstLineHeadIndent = textIndent + ClimbHeaderLayoutFragment.dotGutter
+        paragraph.headIndent = textIndent + ClimbHeaderLayoutFragment.dotGutter
         // Stops short of the trailing edge, where the attempt count and the fold
         // chevron live.
         paragraph.tailIndent = -(textIndent + chevronReserve + countReserve)
@@ -114,9 +114,10 @@ enum NoteDocument {
     /// line under a row is adopted as its notes — and nothing takes one away.
     static let noteQuote = NSAttributedString.Key("climbNoteQuote")
 
-    /// Lines up with the text inside a climb tag and an attempt bubble's title, so
-    /// clocks, notes and body text all hang from the same left edge as the names.
-    static let textIndent: CGFloat = 11
+    /// The note's own left edge: none. Headings, rows, clips and prose all hang off
+    /// the page margin the text view holds, the way the title does — the step in
+    /// existed to clear a climb's pill and an attempt's card, and both are gone.
+    static let textIndent: CGFloat = 0
 
     /// Body text in every way but colour — the notes sit in the note like anything
     /// else you typed, just quieter, tucked under their row.
@@ -134,10 +135,15 @@ enum NoteDocument {
         return paragraph
     }()
 
+    /// A step down from body text: what is written under a row is a note on that go,
+    /// read after the name above it, so it is set smaller as well as quieter.
+    static let quoteFont = UIFont.preferredFont(forTextStyle: .subheadline)
+
     static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
         let paragraph = quoteParagraph
 
         var attributes = bodyAttributes
+        attributes[.font] = quoteFont
         // A step back from the label white the rest of the note is written in — enough
         // that the row's name reads as the head of the block and the notes as what is
         // filed under it, and still well clear of the grey the clock steps back to.
@@ -159,7 +165,7 @@ enum NoteDocument {
     /// beside it is what marks the link.
     static func timestampAttributes(seconds: TimeInterval) -> [NSAttributedString.Key: Any] {
         [
-            .font: UIFont.preferredFont(forTextStyle: .body),
+            .font: quoteFont,
             .foregroundColor: UIColor.secondaryLabel,
             noteTimestamp: seconds,
         ]
@@ -169,7 +175,8 @@ enum NoteDocument {
     /// mark itself rather than guessed: it stands on the same left edge as the row's
     /// name above it, and the words start a clear step past its right edge, so the
     /// mark reads as a label on the clip and not as its first letter.
-    static let bookmarkGutter: CGFloat = BookmarkLayoutFragment.iconSize.width + 9
+    static let bookmarkGutter: CGFloat = BookmarkLayoutFragment.iconLead
+        + BookmarkLayoutFragment.iconSize.width + 9
 
     /// Trailing room held open on a stamped line for the clock drawn at its right edge.
     static let clockReserve: CGFloat = 52
@@ -667,6 +674,44 @@ enum NoteDocument {
         return [.paragraphStyle: paragraph]
     }
 
+    /// Title-cases a heading's line in place: the first letter of every word raised,
+    /// everything else left exactly as typed — so "V4 crimpy" keeps its lowercase
+    /// "crimpy" raised to "Crimpy" and nothing else about the name is touched.
+    ///
+    /// A letter swapped for a letter, never an insert or a delete: the line's length
+    /// never changes, so the caret, the selection and every range measured against the
+    /// storage survive the swap untouched.
+    ///
+    /// A word starts after a space or a bracket-ish mark, not after a digit or an
+    /// apostrophe: "5.10a" stays as it is and "don't" doesn't become "Don'T".
+    private static let wordBreaks: CharacterSet = {
+        var set = CharacterSet.whitespacesAndNewlines
+        set.formUnion(CharacterSet(charactersIn: "-–—/\\([{\"“·,;:"))
+        return set
+    }()
+
+    private static func capitalizeNames(on lines: [NSRange], in storage: NSMutableAttributedString) {
+        let text = storage.string as NSString
+        for line in lines {
+            var startsWord = true
+            for index in line.location..<NSMaxRange(line) {
+                guard let scalar = UnicodeScalar(text.character(at: index)) else {
+                    startsWord = false
+                    continue
+                }
+                if startsWord {
+                    let raised = String(scalar).uppercased()
+                    // Only a same-length raise: anything that grows in uppercase — ß,
+                    // ﬁ — is left alone rather than shifting everything after it.
+                    if raised != String(scalar), raised.utf16.count == 1 {
+                        storage.replaceCharacters(in: NSRange(location: index, length: 1), with: raised)
+                    }
+                }
+                startsWord = wordBreaks.contains(scalar)
+            }
+        }
+    }
+
     /// Restyles in place: body text throughout, rows tight, heading
     /// lines as tinted bubbles, and the notes bound to a row as a quote. Attribute-only
     /// edits, so the selection and any attachments are left untouched.
@@ -697,6 +742,12 @@ enum NoteDocument {
         }
         let headings = lines(carrying: climbHeader)
         let sections = lines(carrying: sectionHeader)
+
+        // Both kinds of heading read as names, whatever they were typed as: "orange"
+        // is Orange, "deadpoint drill" is Deadpoint Drill. Done to the text itself
+        // rather than drawn that way, so what is saved, searched and read back is the
+        // name as it reads on the page.
+        capitalizeNames(on: headings + sections, in: storage)
 
         // Folded heading lines, also read before the wipe — kept only where the line
         // still is a heading of either kind, so a fold cannot outlive its chevron.

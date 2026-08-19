@@ -20,7 +20,7 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
             .withTintColor(.systemYellow, renderingMode: .alwaysOriginal)
     }()
 
-    /// The first note line under its row: only this one reaches up over the row.
+    /// The first note line under its row.
     var opensCard = false
     /// The last note line under its row: the card's bottom corners are rounded here.
     var closesCard = false
@@ -54,10 +54,13 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
 
     static var iconSize: CGSize { icon.size }
 
-    /// Standing on the same left edge as the name of the row above, so the mark on a
-    /// note and the attempt it hangs off line up down one edge of the card.
+    /// A step in off the page's margin — the mark is a label on the clip, not the
+    /// first letter of it, and standing dead on the edge it read as one. The words
+    /// after it move with it, through `NoteDocument.bookmarkGutter`.
+    static let iconLead: CGFloat = 5
+
     private var iconOrigin: CGPoint {
-        CGPoint(x: AttemptRowView.glyphLeading - layoutFragmentFrame.minX,
+        CGPoint(x: AttemptRowView.glyphLeading + Self.iconLead - layoutFragmentFrame.minX,
                 y: firstLineMidY - Self.icon.size.height / 2)
     }
 
@@ -78,6 +81,9 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
     /// card that bled downward was a card painted over the words of a line already
     /// drawn. Only upward, and only from the line that opens the card, where there is
     /// nothing but the row.
+    ///
+    /// As wide as the row's own card: out past the text column on both sides, into the
+    /// page's margin, so the words inside it keep the note's one left edge.
     private var cardRect: CGRect {
         let frame = layoutFragmentFrame
         let top = opensCard ? -Self.topBleed : 0
@@ -89,9 +95,10 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
         let bottom = closesCard
             ? (textLineFragments.last?.typographicBounds.maxY ?? frame.height) + Self.cardBottomPadding
             : frame.height
-        return CGRect(x: horizontalInset - frame.minX,
+        let bleed = AttemptRowView.cardBleed
+        return CGRect(x: horizontalInset - bleed - frame.minX,
                       y: top,
-                      width: containerWidth - horizontalInset * 2,
+                      width: containerWidth - horizontalInset * 2 + bleed * 2,
                       height: bottom - top)
     }
 

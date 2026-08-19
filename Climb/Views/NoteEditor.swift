@@ -2116,15 +2116,16 @@ struct NoteEditor: UIViewRepresentable {
             return sectionLine(onLineAt: offset)
         }
 
-        /// The right edge of a climb heading's pill, in the text view's coordinates —
-        /// measured the same way `ClimbHeaderLayoutFragment` draws it, example name
-        /// and all, so an unnamed bubble is as tappable as a named one.
+        /// The right edge of a climb heading's name, in the text view's coordinates —
+        /// measured the same way `ClimbHeaderLayoutFragment` lays it out, dot lane and
+        /// example name and all, so an unnamed heading is as tappable as a named one.
         private func pillMaxX(ofHeadingLine line: NSRange) -> CGFloat {
             guard let textView else { return .greatestFiniteMagnitude }
             let name = NoteDocument.headingName((textView.textStorage.string as NSString)
                 .substring(with: line))
             let text = name.isEmpty ? NoteDocument.climbExample : name
-            return textView.textContainerInset.left + NoteDocument.textIndent * 2
+            return textView.textContainerInset.left + NoteDocument.textIndent
+                + ClimbHeaderLayoutFragment.dotGutter
                 + HeadingPlaceholder.width(of: text, font: NoteDocument.headerFont)
         }
 
@@ -2314,8 +2315,15 @@ struct NoteEditor: UIViewRepresentable {
 
         /// The quote in the document *is* the attempt's notes, so it is written through
         /// on every edit. One direction only: the document is what the user is typing in.
-        private func syncNotes() {
-            guard let storage = textView?.textStorage else { return }
+        /// The clips counted on each row the last time round, so a row is only
+        /// re-labelled when the number on it actually changed — reconfiguring reads a
+        /// thumbnail off disk, which is not a per-keystroke job.
+        private var clipCounts: [UUID: Int] = [:]
+
+        /// Answers whether any row's clip count moved — see `persist`.
+        @discardableResult
+        private func syncNotes() -> Bool {
+            guard let storage = textView?.textStorage else { return false }
             let written = NoteDocument.notes(in: storage)
 
             // Every row is asked, not just the ones with a quote: notes deleted out of
@@ -2326,11 +2334,15 @@ struct NoteEditor: UIViewRepresentable {
                 if let attempt = value as? AttemptAttachment { ids.append(attempt.attemptID) }
             }
 
+            var counted: [UUID: Int] = [:]
             for id in ids {
+                counted[id] = NoteTimestamp.clips(in: written[id] ?? "").count
                 guard let attempt = parent.session.attempt(with: id) else { continue }
                 let notes = written[id] ?? ""
                 if attempt.notes != notes { attempt.notes = notes }
             }
+            defer { clipCounts = counted }
+            return counted != clipCounts
         }
 
         /// Puts notes edited outside the note — in the attempt's sheet — back into its
@@ -2391,7 +2403,7 @@ struct NoteEditor: UIViewRepresentable {
 
         private func persist() {
             guard let textView else { return }
-            syncNotes()
+            let clipsChanged = syncNotes()
             let (text, ids) = NoteDocument.serialize(textView.attributedText)
             // Adding or deleting a marker reshuffles the groups below it, so every row
             // after the edit is now labelled with a stale number.
@@ -2399,7 +2411,7 @@ struct NoteEditor: UIViewRepresentable {
             parent.session.setDocument(text: text, ids: ids, for: parent.tab)
             parent.session.updatedAt = Date()
             parent.onChange()
-            if markersChanged { refreshRowLabels() }
+            if markersChanged || clipsChanged { refreshRowLabels() }
         }
 
         // MARK: Keyboard toolbar
@@ -2455,7 +2467,7 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         else { return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange) }
 
         // A heading hidden inside a folded section lays out as the hairline text it
-        // now is — no pill, no chevron — rather than a ghost of its bubble. Only a
+        // now is — no dot, no chevron — rather than a ghost of itself. Only a
         // *folded* hairline though: a stamped note line also opens at hairline size —
         // its hidden clock token — and still carries `noteTimestamp`, which folding
         // strips. Without that distinction every note line lost its bookmark and clock.
@@ -2465,8 +2477,8 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
             return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
         }
 
-        // A heading paragraph draws as a bubble: the tinted pill behind the name,
-        // with the fold chevron at the line's trailing edge.
+        // A heading paragraph draws its colour dot before the name, with the fold
+        // chevron at the line's trailing edge.
         if storage.attribute(NoteDocument.climbHeader, at: start, effectiveRange: nil) != nil {
             let line = (storage.string as NSString).lineRange(for: NSRange(location: start, length: 0))
             let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))

@@ -80,7 +80,7 @@ struct AttemptDetailView: View {
             // out of this take's frames and mean nothing against another one, so they
             // go with it. Worth saying before the camera opens, not after.
             Text(fresh ? "The video and every clip on it will be deleted."
-                       : "The video and every clip on it leave the note, and the camera opens for another. Undo is in the note's corner.")
+                       : "The video and every clip on it leave the note, and the camera opens for another.")
         }
         .alert("Delete this attempt?", isPresented: $isConfirmingDelete) {
             Button("Cancel", role: .cancel) { }
@@ -89,7 +89,7 @@ struct AttemptDetailView: View {
             // A fresh take was never anywhere but here, so deleting it is the end of
             // it. A stored one is a row in a note, and that note's undo still applies.
             Text(fresh ? "The video and every clip on it will be deleted."
-                       : "The video and every clip on it leave the note. Undo is in the note's corner.")
+                       : "The video and every clip on it leave the note.")
         }
     }
 

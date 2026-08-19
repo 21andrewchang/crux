@@ -375,32 +375,6 @@ struct SessionDetailView: View {
     /// Split out of `body` purely for the type-checker: inlined, the toolbar's
     /// branches plus the sized glyphs push the one-expression body past what it
     /// will solve in reasonable time.
-    /// Undo, left of whatever else the corner is holding — the ellipsis with the
-    /// keyboard down, the Done check with it up. It is the only way back now that the
-    /// shake gesture is off, so it stays put, dimmed, when there is nothing to undo.
-    private var undoButton: some View {
-        Button {
-            editorController.undo()
-        } label: {
-            Label { Text("Undo") } icon: { topBarGlyph("arrow.uturn.backward") }
-        }
-        .labelStyle(.iconOnly)
-        .disabled(!editorController.canUndo)
-    }
-
-    /// Redo, in the same bubble as undo. Its own button, not a line in the ellipsis:
-    /// taking an edit back and putting it again are the same gesture at the same
-    /// moment, and one of them being two taps down a menu makes the pair unusable.
-    private var redoButton: some View {
-        Button {
-            editorController.redo()
-        } label: {
-            Label { Text("Redo") } icon: { topBarGlyph("arrow.uturn.forward") }
-        }
-        .labelStyle(.iconOnly)
-        .disabled(!editorController.canRedo)
-    }
-
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         // Onboarding owns both corners itself — back to the quiz, and Skip/Done — so
@@ -408,14 +382,6 @@ struct SessionDetailView: View {
         if isOnboarding {
             ToolbarItem(placement: .topBarTrailing) { EmptyView() }
         } else if isEditing || isTitleFocused {
-            // Undo and redo share one bubble — they are one control with two
-            // directions — and the spacer breaks the glass so Done gets its own
-            // circle beside it.
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                undoButton
-                redoButton
-            }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     editorController.endEditing()
@@ -426,11 +392,6 @@ struct SessionDetailView: View {
                 .labelStyle(.iconOnly)
             }
         } else {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                undoButton
-                redoButton
-            }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Delete", systemImage: "trash", role: .destructive) {
