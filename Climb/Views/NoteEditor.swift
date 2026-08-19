@@ -2555,10 +2555,6 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         textView.selectedRange = NSRange(location: visibleLocation(forCaretAt: caret) ?? caret, length: 0)
         isRestyling = false
         syncTypingAttributes()
-
-        // The notes have already gone; the chevron turns after them, the same way a
-        // heading's does once its group has dropped away.
-        folded?.rowView?.spinChevron(folded: closing)
     }
 
     /// Attempts filed under the heading whose line ends at `start`: every row from

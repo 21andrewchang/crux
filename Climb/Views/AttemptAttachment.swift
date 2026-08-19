@@ -22,13 +22,14 @@ final class AttemptAttachment: NSTextAttachment, MarkerAttachment {
     let attemptID: UUID
     var snapshotProvider: ((UUID) -> AttemptSnapshot?)?
     var onTap: ((UUID) -> Void)?
-    /// The chevron: closes the notes under this row and opens them again.
+    /// A tap on the name: closes the notes under this row and opens them again.
     var onToggleFold: ((UUID) -> Void)?
-    /// Whether anything is written under this row. No notes, no chevron — and the
-    /// card closes off at the bottom of the row instead of running on into them.
+    /// Whether anything is written under this row. With nothing there the card closes
+    /// off at the bottom of the row instead of running on into them, and the name has
+    /// nothing to fold.
     var hasNotes = false
-    /// The chevron's state. Its notes draw at hairline size while it is set, the same
-    /// way a folded heading hides its group.
+    /// Whether those notes are closed. They draw at hairline size while it is set, the
+    /// same way a folded heading hides its group.
     var areNotesFolded = false
     /// The row currently on screen for this attachment, so a renumber can reach it
     /// without rebuilding the document.
@@ -126,21 +127,22 @@ final class AttemptRowView: UIView {
 
     static let thumbnailInset: CGFloat = 8
     static let thumbnailSide: CGFloat = 46
-    /// Where the play glyph sits across the row. The bookmarks on the note lines below
-    /// hang from this too: one column down the left of the card, so the mark on a clip
-    /// reads as belonging to the video it points into.
-    static let glyphCentre: CGFloat = thumbnailInset + thumbnailSide / 2
-    /// The gap between the video and the name beside it.
+    /// The gap between the name and the video at the other end of the row.
     static let labelGap: CGFloat = 14
-    /// Where the row's name starts. The notes' words hang from it too, so a clip's
-    /// text and the attempt's name read down one edge.
-    static let textColumn: CGFloat = thumbnailInset + thumbnailSide + labelGap
+    /// Where the row's name starts: the same left edge as every other name in the
+    /// note, and the edge the notes' words hang from, so a clip's text and the
+    /// attempt's name read down one line.
+    static let textColumn: CGFloat = NoteDocument.textIndent
+    /// Where the bookmarks on the note lines below start. Its left edge, not its
+    /// middle: the video is no longer over that lane, so the mark stands on the card's
+    /// own left edge — flush with the "A" of the name above it — and the words of the
+    /// clip step past it.
+    static let glyphLeading: CGFloat = textColumn
 
     private let container = UIView()
-    /// The heading's chevron, exactly: same glyph, same size, same colour, and hung in
-    /// the same column — a row is another thing in this note that folds, and there is
-    /// no reason for its chevron to be a different object.
-    private let chevron = UIImageView(image: HeadingChevron.icon())
+    /// Whether anything is written under this row — what decides whether a tap on the
+    /// name has notes to fold away.
+    private var hasNotes = false
 
     private let thumbnailView = UIImageView()
     private let playGlyph = UIImageView(image: UIImage(systemName: "play.fill"))
@@ -156,9 +158,9 @@ final class AttemptRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func buildHierarchy() {
-        // The row reads as the head of one box: a near-black card with the video on
-        // the left, what it is beside that, and the chevron that opens and closes the
-        // notes at the far edge. The notes themselves are drawn on the same ground
+        // The row reads as the head of one box: a near-black card with the name on the
+        // card's own left edge, where every other name in the note starts, and the
+        // video held at the far end. The notes themselves are drawn on the same ground
         // below, so the whole thing is one card.
         container.backgroundColor = Self.cardFill
         container.layer.cornerRadius = Self.cardRadius
@@ -196,19 +198,14 @@ final class AttemptRowView: UIView {
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(detailLabel)
 
-        chevron.contentMode = .center
-        chevron.isHidden = true
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(chevron)
-
         NSLayoutConstraint.activate([
             container.leadingAnchor.constraint(equalTo: leadingAnchor),
             container.trailingAnchor.constraint(equalTo: trailingAnchor),
             container.topAnchor.constraint(equalTo: topAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            thumbnailView.leadingAnchor.constraint(equalTo: container.leadingAnchor,
-                                                   constant: Self.thumbnailInset),
+            thumbnailView.trailingAnchor.constraint(equalTo: container.trailingAnchor,
+                                                    constant: -Self.thumbnailInset),
             thumbnailView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             thumbnailView.widthAnchor.constraint(equalToConstant: Self.thumbnailSide),
             thumbnailView.heightAnchor.constraint(equalToConstant: Self.thumbnailSide),
@@ -216,23 +213,16 @@ final class AttemptRowView: UIView {
             playGlyph.centerXAnchor.constraint(equalTo: thumbnailView.centerXAnchor),
             playGlyph.centerYAnchor.constraint(equalTo: thumbnailView.centerYAnchor),
 
-            // The same column every heading's chevron hangs in: its right edge one
-            // text indent in from the trailing edge, turning inside a square wide
-            // enough for the glyph lying down and tall enough for it standing up.
-            chevron.trailingAnchor.constraint(equalTo: container.trailingAnchor,
-                                              constant: -NoteDocument.textIndent),
-            chevron.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: HeadingChevron.side),
-            chevron.heightAnchor.constraint(equalToConstant: HeadingChevron.side),
-
-            titleLabel.leadingAnchor.constraint(equalTo: thumbnailView.trailingAnchor,
-                                                constant: Self.labelGap),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
+            titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor,
+                                                constant: Self.textColumn),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
+                                                 constant: -Self.labelGap),
             // Title sits just above center so the pair of labels reads as one centered block.
             titleLabel.bottomAnchor.constraint(equalTo: container.centerYAnchor, constant: 2),
 
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
+                                                  constant: -Self.labelGap),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
         ])
     }
@@ -258,31 +248,6 @@ final class AttemptRowView: UIView {
         return NSAttributedString(attachment: attachment)
     }
 
-    /// The chevron lying down when the notes under the row are closed.
-    private static func turn(folded: Bool) -> CGAffineTransform {
-        folded ? CGAffineTransform(rotationAngle: -.pi / 2) : .identity
-    }
-
-    /// Turns the chevron to its new state over the same beat a heading's takes.
-    ///
-    /// Driven from outside, after the fold has landed, for the reason `FoldAnimator`
-    /// exists at all: a fold is a restyle, and the restyle re-states this row — so an
-    /// animation started from inside `showNotes` is either overwritten or never
-    /// started, depending on whether the view survived.
-    func spinChevron(folded: Bool) {
-        chevron.transform = Self.turn(folded: !folded)
-        // `FoldAnimator` eases a heading's chevron on `1 - (1 - t)³` — out fast, then
-        // settling. `.curveEaseOut` is a gentler curve that hangs about at the start,
-        // and beside the real thing it reads as a slower spin even at the same
-        // duration; these are that cubic as a Bezier.
-        let animator = UIViewPropertyAnimator(duration: HeadingChevron.spinDuration,
-                                              controlPoint1: CGPoint(x: 0.215, y: 0.61),
-                                              controlPoint2: CGPoint(x: 0.355, y: 1)) {
-            self.chevron.transform = Self.turn(folded: folded)
-        }
-        animator.startAnimation()
-    }
-
     /// A tap somewhere on this row, in the row's own coordinates.
     ///
     /// Driven from the text view's recognizer rather than one of this row's own,
@@ -290,12 +255,15 @@ final class AttemptRowView: UIView {
     /// row is a link into the attempt, and following it must not also drop the cursor
     /// into the note behind it. `NoteEditor` routes the tap here.
     ///
-    /// The whole card is that link — video, name, length and the empty space around
-    /// them all open the clip. The chevron is the one part that does something else,
-    /// in a target widened to a finger.
+    /// The row is cut in two down its length, with no glyph to say so: the video and
+    /// the end of the card it sits in open the clip, and the name, the length and the
+    /// room beside them close the notes underneath. Split on the video's near edge and
+    /// judged on x alone, so the whole height of each side answers the same way.
     func handleTap(at point: CGPoint) {
-        let folds = convert(chevron.frame, from: container).insetBy(dx: -12, dy: -12)
-        if !chevron.isHidden, folds.contains(point) {
+        let video = convert(thumbnailView.frame, from: container)
+        // Nothing written under the row means nothing to fold, and a dead half of a
+        // card is worse than a wide target: the whole thing opens the clip instead.
+        if hasNotes, point.x < video.minX - Self.labelGap / 2 {
             onToggleFold?()
         } else {
             onTap?()
@@ -306,8 +274,7 @@ final class AttemptRowView: UIView {
     /// the card carries on downward, so its own corners stop at the top; without them
     /// it is the whole box and rounds all four.
     func showNotes(_ has: Bool, folded: Bool) {
-        chevron.isHidden = !has
-        chevron.transform = Self.turn(folded: folded)
+        hasNotes = has
         container.layer.maskedCorners = has && !folded
             ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
             : [.layerMinXMinYCorner, .layerMaxXMinYCorner,

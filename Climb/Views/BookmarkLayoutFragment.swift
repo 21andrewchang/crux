@@ -54,10 +54,10 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
 
     static var iconSize: CGSize { icon.size }
 
-    /// Centred on the same column as the row's play glyph, so the mark on a note and
-    /// the video it points into stack up the left edge of one card.
+    /// Standing on the same left edge as the name of the row above, so the mark on a
+    /// note and the attempt it hangs off line up down one edge of the card.
     private var iconOrigin: CGPoint {
-        CGPoint(x: AttemptRowView.glyphCentre - Self.icon.size.width / 2 - layoutFragmentFrame.minX,
+        CGPoint(x: AttemptRowView.glyphLeading - layoutFragmentFrame.minX,
                 y: firstLineMidY - Self.icon.size.height / 2)
     }
 

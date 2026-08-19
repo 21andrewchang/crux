@@ -165,11 +165,11 @@ enum NoteDocument {
         ]
     }
 
-    /// Room for the bookmark drawn in the gutter before the clock. Derived, not
-    /// guessed: the mark hangs in the row's play-glyph column and the words start
-    /// where the row's own name starts, so a clip's text and the attempt it belongs to
-    /// read down one edge.
-    static let bookmarkGutter: CGFloat = AttemptRowView.textColumn - textIndent
+    /// Room for the bookmark drawn in the gutter before the clock. Measured off the
+    /// mark itself rather than guessed: it stands on the same left edge as the row's
+    /// name above it, and the words start a clear step past its right edge, so the
+    /// mark reads as a label on the clip and not as its first letter.
+    static let bookmarkGutter: CGFloat = BookmarkLayoutFragment.iconSize.width + 9
 
     /// Trailing room held open on a stamped line for the clock drawn at its right edge.
     static let clockReserve: CGFloat = 52
