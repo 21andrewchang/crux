@@ -1,134 +1,133 @@
 import SwiftUI
 import UIKit
 
-/// The beat between the quiz and the walkthrough: the answers being turned into
-/// something, said out loud one line at a time, over a boulder problem going up the
-/// screen a hold at a time. The route is the progress bar — how far up the wall it has
-/// got is how far through this the app is.
+/// The beat between the quiz and the walkthrough: a ring filling while the answers are
+/// turned into something, with the list of what is being made ticking off under it.
+///
+/// The copy names only what the app actually does with what was just answered — a
+/// profile, a pair of grades, the focus areas, and the goal page they all land on.
+/// Nothing here claims work that isn't happening.
 struct LoadingView: View {
-    /// Said in the order they happen, and named for what the app is doing with what was
-    /// just answered rather than for what the code is doing.
-    private static let stages = ["Creating climbing profile",
-                                 "Personalizing journal"]
+    /// Ticked in order, one per quarter of the ring. Named for the thing being made
+    /// rather than for the code making it.
+    private static let steps = ["Climbing profile",
+                                "Grade targets",
+                                "Focus areas",
+                                "Your goal page"]
 
-    /// How long each line holds. Long enough to read, short enough that it never feels
-    /// like waiting.
-    private static let stageDuration: TimeInterval = 1.8
-
-    /// Where the room's light hangs. The wall is painted by it and the holds are lit by
-    /// it, so it is settled once here and handed to both.
-    private static let light = CGVector(dx: -0.48, dy: -0.62)
+    /// Long enough that the ring reads as a fill rather than a jump, short enough that
+    /// it never becomes waiting. Nothing is actually being computed behind it — the
+    /// screen is the beat, so this is the whole of the wait.
+    private static let duration: TimeInterval = 2
 
     var onFinish: () -> Void
 
-    @State private var stage = 0
-    @State private var progress: CGFloat = 0
+    /// Driven by hand rather than by `withAnimation`, because the number in the middle
+    /// has to be the same value the ring is drawn from — an implicit animation would
+    /// move the arc and leave the digits behind.
+    @State private var progress: Double = 0
+
+    private var done: Int { Int(progress * Double(Self.steps.count)) }
 
     var body: some View {
-        // The wall first, then the route on it, then the line being read over the middle.
-        // Two shadows under the words — a tight one to hold the letters off any hold they
-        // land on, a wide one to sink the wall behind them.
-        ZStack {
-            GymWall(light: Self.light)
+        VStack(spacing: 0) {
+            Spacer()
 
-            // The light swings a few degrees across the whole run. Almost nothing moves,
-            // but the gloss crawls over the holds as it goes, and a highlight that moves
-            // is the one thing a picture of a hold can never do.
-            TimelineView(.animation) { context in
-                RouteProgress(progress: progress, light: Self.light(at: context.date))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.vertical, 40)
-            }
+            ring
 
-            Text(Self.stages[min(stage, Self.stages.count - 1)])
+            Text("Setting up your journal")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
-                // Only the band the words themselves take is darkened, blurred out to
-                // nothing at its edges — the wall keeps its middle, the letters keep
-                // their contrast.
-                .background {
-                    Capsule()
-                        .fill(.black.opacity(0.62))
-                        .blur(radius: 30)
-                        .padding(.horizontal, -48)
-                        .padding(.vertical, -22)
-                }
-                .shadow(color: .black.opacity(0.9), radius: 5)
-                .id(stage)
-                .transition(.opacity)
-                .padding(.horizontal, 24)
+                .padding(.top, 40)
+
+            card
+                .padding(.top, 36)
+
+            Spacer()
+            Spacer()
         }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
-        .animation(.easeInOut(duration: 0.3), value: stage)
         .task(run)
     }
 
-    /// The light, swung a little either side of where it hangs. Slow enough that it is
-    /// never the thing being watched, wide enough that no two holds catch it at once.
-    private static func light(at date: Date) -> CGVector {
-        let sweep = sin(date.timeIntervalSinceReferenceDate * 0.55) * 0.16
-        return CGVector(dx: light.dx * cos(sweep) - light.dy * sin(sweep),
-                        dy: light.dx * sin(sweep) + light.dy * cos(sweep))
+    private var ring: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.surface, lineWidth: 14)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(Color.white, style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                // From the top, clockwise — a ring that starts anywhere else reads as a
+                // dial being turned rather than as something filling up.
+                .rotationEffect(.degrees(-90))
+
+            Text("\(Int(progress * 100))%")
+                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+        }
+        .frame(width: 180, height: 180)
     }
 
-    /// The run, one stage per half of the wall: the bottom half goes up under the first
-    /// line, everything stops, the line changes, and the top half goes up under the
-    /// second. Each half is a run of its own — slow at the start, quick through the
-    /// middle, slow again at the top — so the pause reads as the halfway rest it is.
+    /// The list of what is being made, lifted off the black by a few percent rather than
+    /// boxed in by a line — the same way every other block in the app stands apart.
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("From your answers")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.45))
+
+            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, step in
+                let isDone = index < done
+                HStack(spacing: 12) {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(isDone ? Color.white : Color.white.opacity(0.25))
+                        .contentTransition(.symbolEffect(.replace))
+                    Text(step)
+                        .foregroundStyle(isDone ? Color.white : Color.white.opacity(0.4))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(Color.surface, in: .rect(cornerRadius: 18))
+        .animation(.easeInOut(duration: 0.25), value: done)
+    }
+
+    /// The fill, stepped by hand at screen rate. Eased at both ends so it leaves and
+    /// arrives slowly, which is what makes the couple of seconds read as work rather
+    /// than as a timer, with a tap under the finger every time a line is ticked.
     @Sendable
     private func run() async {
-        let holds = RouteProgress.holds.count
-        guard holds > 1 else { onFinish(); return }
-
         let tap = UIImpactFeedbackGenerator(style: .medium)
         tap.prepare()
 
-        let half = holds / 2
-        guard await place(0..<half, tapping: tap) else { return }
+        let start = ContinuousClock.now
+        var ticked = 0
+        while true {
+            let since = start.duration(to: .now)
+            let elapsed = Double(since.components.seconds)
+                + Double(since.components.attoseconds) / 1e18
+            let t = min(elapsed / Self.duration, 1)
+            progress = t * t * (3 - 2 * t)
 
-        // The rest between halves: hands off, read the next line, carry on.
-        try? await Task.sleep(for: .seconds(0.45))
-        if Task.isCancelled { return }
-        stage = 1
-        try? await Task.sleep(for: .seconds(0.5))
-        if Task.isCancelled { return }
+            if done > ticked {
+                ticked = done
+                tap.impactOccurred()
+                tap.prepare()
+            }
+            if t >= 1 { break }
 
-        guard await place(half..<holds, tapping: tap) else { return }
+            try? await Task.sleep(for: .milliseconds(33))
+            // Cancelled means the screen went away underneath us — nothing to finish.
+            if Task.isCancelled { return }
+        }
 
-        try? await Task.sleep(for: .seconds(0.45))
+        try? await Task.sleep(for: .seconds(0.3))
         if Task.isCancelled { return }
         onFinish()
-    }
-
-    /// Puts one stretch of the route on the wall over `stageDuration`, a hold at a time.
-    /// The gaps come off a cosine — widest at either end of the stretch, tightest
-    /// through its middle — which is a progress bar's speeding up and slowing down, felt
-    /// in the taps as much as seen in the holds. False if the screen went away.
-    private func place(_ range: Range<Int>, tapping tap: UIImpactFeedbackGenerator) async -> Bool {
-        let count = range.count
-        guard count > 0 else { return true }
-        let gaps = (0..<max(count - 1, 1)).map { index -> Double in
-            let along = count > 2 ? Double(index) / Double(count - 2) : 0.5
-            return 1 + 0.8 * cos(2 * .pi * along)
-        }
-        let scale = Self.stageDuration / max(gaps.reduce(0, +), 0.001)
-
-        for (step, index) in range.enumerated() {
-            withAnimation(.easeOut(duration: 0.22)) {
-                progress = CGFloat(index + 1) / CGFloat(RouteProgress.holds.count)
-            }
-            // The same tap every time: a hold going on the wall is one event, not a
-            // measurement of the hold.
-            tap.impactOccurred()
-            tap.prepare()
-
-            guard step < count - 1 else { break }
-            try? await Task.sleep(for: .seconds(gaps[step] * scale))
-            // Cancelled means the screen went away underneath us — nothing to finish.
-            if Task.isCancelled { return false }
-        }
-        return true
     }
 }

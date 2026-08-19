@@ -82,8 +82,7 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
     /// drawn. Only upward, and only from the line that opens the card, where there is
     /// nothing but the row.
     ///
-    /// As wide as the row's own card: out past the text column on both sides, into the
-    /// page's margin, so the words inside it keep the note's one left edge.
+    /// As wide as the row's own card: the whole text column, edge to edge.
     private var cardRect: CGRect {
         let frame = layoutFragmentFrame
         let top = opensCard ? -Self.topBleed : 0
@@ -95,17 +94,16 @@ final class BookmarkLayoutFragment: NSTextLayoutFragment {
         let bottom = closesCard
             ? (textLineFragments.last?.typographicBounds.maxY ?? frame.height) + Self.cardBottomPadding
             : frame.height
-        let bleed = AttemptRowView.cardBleed
-        return CGRect(x: horizontalInset - bleed - frame.minX,
+        return CGRect(x: horizontalInset - frame.minX,
                       y: top,
-                      width: containerWidth - horizontalInset * 2 + bleed * 2,
+                      width: containerWidth - horizontalInset * 2,
                       height: bottom - top)
     }
 
     private var clockRect: CGRect {
         guard let clock else { return .null }
         let size = (clock as NSString).size(withAttributes: Self.clockAttributes)
-        return CGRect(x: containerWidth - NoteDocument.textIndent - size.width - layoutFragmentFrame.minX,
+        return CGRect(x: containerWidth - AttemptRowView.cardPadding - size.width - layoutFragmentFrame.minX,
                       y: firstLineMidY - size.height / 2,
                       width: size.width, height: size.height)
     }

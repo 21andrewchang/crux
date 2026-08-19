@@ -1,7 +1,14 @@
 import UIKit
 
-/// The check-in card: the grey block pinned under a note's title, holding the six
-/// questions a readiness score is made of.
+/// The check-in card, pinned under a note's title: the score the session opened with,
+/// and the four answers it was made of.
+///
+/// It does not ask anything. The questions live in `CheckInFlow`, which runs over the
+/// whole screen before the note is ever on it — a form embedded in a document is a
+/// form you scroll past, and this is the one thing a session should not begin without
+/// having been offered. What is left here is the reading of it: a number you can see
+/// across the room, and the four answers under it in case you want to know why it says
+/// what it says. Tapping it opens the questions again.
 ///
 /// Deliberately not a `MarkerAttachment`. Nothing about it is written into `bodyText`
 /// and it carries no id — every session has exactly one, put into the document on the
@@ -10,10 +17,11 @@ import UIKit
 /// written before the card existed, and what stops a note growing a stray marker
 /// every time it is saved.
 final class CheckInAttachment: NSTextAttachment {
-    /// The card holds no state of its own: it reads the session through these and
-    /// writes back through them, so a reload rebuilds it exactly as it stood.
+    /// The card holds no state of its own: it reads the session through this, so a
+    /// reload rebuilds it exactly as it stood.
     var answers: () -> [Int] = { [] }
-    var onAnswer: (_ field: Int, _ option: Int) -> Void = { _, _ in }
+    /// The card was tapped: put the questions back on screen.
+    var onOpen: () -> Void = {}
     /// The card's height has changed under it, so the line it sits on has to be laid
     /// out again — something only the editor can ask for.
     var onResize: () -> Void = {}
@@ -48,24 +56,25 @@ final class CheckInAttachment: NSTextAttachment {
     }()
 
     /// `attachmentBounds` is asked on every pass over the line — and the caret maths
-    /// asks again on every caret query, which is every keystroke — so the answer is
-    /// kept rather than re-fitted. The width is the whole of the key: the advice line
-    /// is held open at two lines whatever it says, so which answers are given cannot
-    /// move it.
-    private var measured: (width: CGFloat, height: CGFloat)?
+    /// asks again on every caret query — so the answer is kept rather than re-fitted.
+    /// Keyed on whether the check-in is answered as well as on width: an unanswered
+    /// card drops its summary, so the two are different heights at the same width.
+    private var measured: (width: CGFloat, complete: Bool, height: CGFloat)?
 
     func height(forWidth width: CGFloat) -> CGFloat {
-        if let measured, measured.width == width {
+        let current = answers()
+        let complete = CheckIn.readiness(current) != nil
+        if let measured, measured.width == width, measured.complete == complete {
             return measured.height
         }
-        ruler.configure(answers: answers())
+        ruler.configure(answers: current)
         ruler.frame = CGRect(x: 0, y: 0, width: width, height: 0)
         let fitted = ruler.systemLayoutSizeFitting(
             CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel)
         let height = ceil(fitted.height)
-        measured = (width, height)
+        measured = (width, complete, height)
         return height
     }
 
@@ -77,7 +86,6 @@ final class CheckInAttachment: NSTextAttachment {
     }
 
     /// The width the card lays out in: the full text column, like an attempt row.
-    /// Shared, so the two questions below cannot answer at different widths.
     ///
     /// Reads `proposedLineFragment.width` and never its height, and must keep doing
     /// so: `NoteTextView`'s caret maths asks for these bounds with a proposed fragment
@@ -122,7 +130,7 @@ final class CheckInViewProvider: NSTextAttachmentViewProvider {
         let card = CheckInCardView()
         if let attachment = textAttachment as? CheckInAttachment {
             card.configure(answers: attachment.answers())
-            card.onAnswer = { [weak attachment] field, option in attachment?.onAnswer(field, option) }
+            card.onOpen = { [weak attachment] in attachment?.onOpen() }
             attachment.cardView = card
         }
         view = card
@@ -140,33 +148,22 @@ final class CheckInViewProvider: NSTextAttachmentViewProvider {
     }
 }
 
-/// The card itself: six rows of taps and the score they come to.
+/// The card itself: the score, what it came to, and the four answers behind it.
 ///
-/// No header and no way to shut it. The page it opens is called Check-in and holds
-/// nothing else, so a bar naming it again would be the same word twice — and a card
-/// that is the whole point of its page has nothing to be collapsed out of the way of.
-///
-/// Everything is a tap and nothing is a drag. The coaching platforms ask these on
-/// 0–10 sliders, but a slider living inside a scrolling text view spends its life
-/// arguing with the scroll for the same gesture — and a five-point scale answered
-/// honestly beats an eleven-point one answered by whichever pixel the thumb landed on.
+/// Drawn at a size that assumes it is the only thing on its page, because it is. The
+/// number carries the colour and nothing else does — it is the one thing here you
+/// should be able to read without reading it.
 final class CheckInCardView: UIView {
-    var onAnswer: ((Int, Int) -> Void)?
+    /// The card was tapped.
+    var onOpen: (() -> Void)?
 
-    private let container = UIView()
-    private let questions = UIStackView()
-    private let divider = UIView()
-    private let footer = UIStackView()
+    private let column = UIStackView()
     private let scoreLabel = UILabel()
     private let verdictLabel = UILabel()
     private let adviceLabel = UILabel()
-    /// The pills, by question then by option — the grid, kept so a configure can
-    /// restyle it without rebuilding it.
-    private var pills: [[UIButton]] = []
-
-    private static let rowHeight: CGFloat = 30
-    private static let labelWidth: CGFloat = 56
-    private static let adviceFont = UIFont.systemFont(ofSize: 13)
+    private let summary = UIStackView()
+    /// The answer beside each question's name, in `CheckIn.fields` order.
+    private var values: [UILabel] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -177,170 +174,97 @@ final class CheckInCardView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func buildHierarchy() {
-        // The one grey in the app: a few percent of white, no border. Everything that
-        // has to read as its own block lifts off the black by exactly this much.
-        container.backgroundColor = UIColor.white.withAlphaComponent(0.07)
-        container.layer.cornerRadius = 14
-        container.layer.cornerCurve = .continuous
-        container.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(container)
+        scoreLabel.font = .systemFont(ofSize: 84, weight: .bold)
+        scoreLabel.textAlignment = .center
 
-        let column = UIStackView()
-        column.axis = .vertical
-        column.spacing = 12
-        column.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(column)
+        verdictLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        verdictLabel.textColor = .label
+        verdictLabel.textAlignment = .center
 
-        questions.axis = .vertical
-        questions.spacing = 6
-        for (index, field) in CheckIn.fields.enumerated() {
-            questions.addArrangedSubview(makeRow(index, field: field))
+        adviceLabel.font = .systemFont(ofSize: 14)
+        adviceLabel.textColor = .secondaryLabel
+        adviceLabel.textAlignment = .center
+        adviceLabel.numberOfLines = 0
+
+        // What the number was made of, under it and smaller. The four answers are the
+        // receipt for the score, and nobody reads a receipt first.
+        summary.axis = .vertical
+        summary.spacing = 7
+        for field in CheckIn.fields {
+            summary.addArrangedSubview(makeSummaryRow(field))
         }
-        column.addArrangedSubview(questions)
 
-        divider.backgroundColor = UIColor.white.withAlphaComponent(0.08)
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        column.addArrangedSubview(divider)
-
-        buildFooter()
-        column.addArrangedSubview(footer)
-
-        // Tighter around the rule than between the blocks it separates — it is a
-        // seam, not another block.
-        column.setCustomSpacing(10, after: questions)
-        column.setCustomSpacing(10, after: divider)
+        column.axis = .vertical
+        column.alignment = .fill
+        column.spacing = 2
+        column.translatesAutoresizingMaskIntoConstraints = false
+        column.addArrangedSubview(scoreLabel)
+        column.addArrangedSubview(verdictLabel)
+        column.addArrangedSubview(adviceLabel)
+        column.addArrangedSubview(summary)
+        column.setCustomSpacing(10, after: verdictLabel)
+        column.setCustomSpacing(32, after: adviceLabel)
+        addSubview(column)
 
         NSLayoutConstraint.activate([
-            container.topAnchor.constraint(equalTo: topAnchor, constant: CheckInAttachment.margin),
-            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CheckInAttachment.margin),
-            container.leadingAnchor.constraint(equalTo: leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor),
-
-            column.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            column.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
-            column.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            column.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            column.topAnchor.constraint(equalTo: topAnchor, constant: CheckInAttachment.margin),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CheckInAttachment.margin),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityHint = "Opens the check-in."
     }
 
-    private func buildFooter() {
-        scoreLabel.font = .systemFont(ofSize: 28, weight: .bold)
-        scoreLabel.setContentHuggingPriority(.required, for: .horizontal)
+    private func makeSummaryRow(_ field: CheckIn.Field) -> UIView {
+        let name = UILabel()
+        name.text = field.title
+        name.font = .systemFont(ofSize: 15)
+        name.textColor = .tertiaryLabel
 
-        verdictLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        let value = UILabel()
+        value.font = .systemFont(ofSize: 15, weight: .medium)
+        value.textColor = .secondaryLabel
+        value.textAlignment = .right
+        values.append(value)
 
-        // Held open at two lines whatever it currently says, so answering a question
-        // never reflows the note under the card.
-        adviceLabel.font = Self.adviceFont
-        adviceLabel.textColor = .secondaryLabel
-        adviceLabel.numberOfLines = 2
-        adviceLabel.translatesAutoresizingMaskIntoConstraints = false
-        adviceLabel.heightAnchor.constraint(equalToConstant: ceil(Self.adviceFont.lineHeight * 2)).isActive = true
-
-        let score = UIStackView(arrangedSubviews: [scoreLabel, verdictLabel])
-        score.axis = .horizontal
-        score.spacing = 8
-        score.alignment = .firstBaseline
-
-        footer.axis = .vertical
-        footer.spacing = 3
-        footer.addArrangedSubview(score)
-        footer.addArrangedSubview(adviceLabel)
-    }
-
-    private func makeRow(_ index: Int, field: CheckIn.Field) -> UIView {
-        let label = UILabel()
-        label.text = field.title
-        label.font = .systemFont(ofSize: 13)
-        label.textColor = .secondaryLabel
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: Self.labelWidth).isActive = true
-
-        let options = UIStackView()
-        options.axis = .horizontal
-        options.spacing = 4
-        options.distribution = .fillEqually
-
-        var buttons: [UIButton] = []
-        for (option, title) in field.options.enumerated() {
-            let pill = makePill(title)
-            pill.addAction(UIAction { [weak self] _ in self?.onAnswer?(index, option) },
-                           for: .touchUpInside)
-            options.addArrangedSubview(pill)
-            buttons.append(pill)
-        }
-        pills.append(buttons)
-
-        let row = UIStackView(arrangedSubviews: [label, options])
+        let row = UIStackView(arrangedSubviews: [name, value])
         row.axis = .horizontal
-        row.spacing = 8
-        row.alignment = .fill
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.heightAnchor.constraint(equalToConstant: Self.rowHeight).isActive = true
+        row.spacing = 12
         return row
     }
 
-    private func makePill(_ title: String) -> UIButton {
-        var config = UIButton.Configuration.plain()
-        config.title = title
-        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 2)
-        config.background.cornerRadius = 8
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 12, weight: .medium)
-            return outgoing
-        }
-        let pill = UIButton(type: .system)
-        pill.configuration = config
-        return pill
-    }
-
-    /// The answer given lifts further off the page rather than colouring in: the note
-    /// is black and grey the whole way down, and the one place colour is allowed to
-    /// carry meaning here is the score.
-    private func style(_ pill: UIButton, selected: Bool) {
-        guard var config = pill.configuration else { return }
-        config.background.backgroundColor = UIColor.white.withAlphaComponent(selected ? 0.20 : 0.05)
-        config.baseForegroundColor = selected ? .label : .secondaryLabel
-        pill.configuration = config
+    @objc private func tapped() {
+        onOpen?()
     }
 
     func configure(answers: [Int]) {
-        for (index, buttons) in pills.enumerated() {
-            let answer = answers.indices.contains(index) ? answers[index] : CheckIn.unanswered
-            for (option, pill) in buttons.enumerated() {
-                style(pill, selected: option == answer)
-            }
-        }
+        let verdict = CheckIn.verdict(for: answers)
 
-        if let score = CheckIn.readiness(answers), let verdict = CheckIn.verdict(for: answers) {
+        if let score = CheckIn.readiness(answers), let verdict {
             scoreLabel.text = "\(score)"
-            scoreLabel.textColor = Self.tint(for: score)
+            scoreLabel.textColor = verdict.band.uiTint
             verdictLabel.text = verdict.headline
-            verdictLabel.textColor = .label
             adviceLabel.text = verdict.advice
+            accessibilityLabel = "Readiness \(score). \(verdict.headline). \(verdict.advice)"
         } else {
-            let done = CheckIn.answeredCount(answers)
-            // No partial score: a number that climbed as the form was filled in would
-            // teach you to fill the form in until it read the way you wanted.
+            // Backed out of rather than answered. The card says what it is for and
+            // nothing else — a number would have to be invented to sit there, and a
+            // dash reads as a score of nothing rather than as a question never asked.
             scoreLabel.text = "—"
-            scoreLabel.textColor = .tertiaryLabel
-            verdictLabel.text = "\(done) of \(CheckIn.fields.count)"
-            verdictLabel.textColor = .secondaryLabel
-            adviceLabel.text = "Answer all six for today's readiness — what this session should be, before you get on anything."
+            scoreLabel.textColor = .quaternaryLabel
+            verdictLabel.text = "Check in"
+            adviceLabel.text = "Four questions, ten seconds — what this session should be."
+            accessibilityLabel = "Check in. Four questions, ten seconds."
         }
-    }
 
-    /// Green through red by band. Meaning, not decoration — it is the one thing on
-    /// the card you should be able to read without reading it.
-    private static func tint(for score: Int) -> UIColor {
-        switch score {
-        case 80...: .systemGreen
-        case 60..<80: UIColor(red: 0.66, green: 0.85, blue: 0.35, alpha: 1)
-        case 40..<60: .systemYellow
-        case 20..<40: .systemOrange
-        default: .systemRed
+        for (index, field) in CheckIn.fields.enumerated() {
+            let answer = answers.indices.contains(index) ? answers[index] : CheckIn.unanswered
+            values[index].text = field.options.indices.contains(answer) ? field.options[answer] : "—"
         }
+        summary.isHidden = verdict == nil
     }
 }

@@ -48,11 +48,16 @@ final class Store {
     /// body cannot await; this is that same answer kept current — at launch, after a
     /// purchase, and whenever the App Store sends a change of its own.
     ///
-    /// It starts false, so the one frame before the first refresh lands looks like
-    /// not-subscribed. That is the safe direction for a paywall to be wrong in for a
-    /// frame: the gate is on making a *new* session, never on reading an existing one,
-    /// so the worst it can do is briefly offer a subscription to somebody who has one.
-    private(set) var isPro = false
+    /// It is remembered across launches rather than starting false, because the whole
+    /// app is behind it now: asking the App Store takes a moment, and a subscriber must
+    /// not watch the paywall flash past on every cold launch while that moment passes.
+    /// The remembered answer is replaced by the real one as soon as it lands, so the
+    /// worst this can be is one launch out of date for somebody who just cancelled.
+    private(set) var isPro = UserDefaults.standard.bool(forKey: Store.proKey) {
+        didSet { UserDefaults.standard.set(isPro, forKey: Self.proKey) }
+    }
+
+    private static let proKey = "isPro"
 
     /// Brings `isPro` back in line with what the App Store says is owned.
     func refresh() async {
@@ -118,6 +123,47 @@ final class Store {
         print("[Store] asked for \(ids) — got \(products.map(\.id)), error: \(loadError ?? "none")")
         #endif
     }
+
+    /// The free trial the App Store has on a plan, said the way the plan screen wants
+    /// to say it — "3 days" — or nothing at all where there is no trial to have.
+    ///
+    /// Read off the product rather than written down here, so a build whose App Store
+    /// Connect entry has no introductory offer simply stops promising one instead of
+    /// promising one it cannot give.
+    func trial(for plan: Plan) -> String? {
+        guard let offer = product(for: plan)?.subscription?.introductoryOffer,
+              offer.paymentMode == .freeTrial else { return nil }
+        let count = offer.period.value
+        let unit = switch offer.period.unit {
+        case .day: "day"
+        case .week: "week"
+        case .month: "month"
+        case .year: "year"
+        @unknown default: "day"
+        }
+        return "\(count) \(unit)\(count == 1 ? "" : "s")"
+    }
+
+    /// The same trial as a length of time, for laying down the reminder that it is
+    /// about to end.
+    func trialLength(for plan: Plan) -> TimeInterval? {
+        guard let offer = product(for: plan)?.subscription?.introductoryOffer,
+              offer.paymentMode == .freeTrial else { return nil }
+        let day: TimeInterval = 24 * 60 * 60
+        let unit: TimeInterval = switch offer.period.unit {
+        case .day: day
+        case .week: 7 * day
+        case .month: 30 * day
+        case .year: 365 * day
+        @unknown default: day
+        }
+        return Double(offer.period.value) * unit
+    }
+
+    /// Whether anything on sale here comes with a trial. The onboarding paywall's first
+    /// two screens are entirely about the trial, so with no trial anywhere they are
+    /// skipped rather than shown as copy about nothing.
+    var hasTrial: Bool { Plan.allCases.contains { trial(for: $0) != nil } }
 
     /// Runs the purchase and says whether it went through. Cancelling is not a failure
     /// — nothing is shown for it, the paywall simply stays up.

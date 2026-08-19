@@ -2,12 +2,13 @@ import SwiftUI
 import SwiftData
 import UIKit
 
-/// What the app opens on. First run walks quiz → tutorial → paywall, and the notes
+/// What the app opens on. First run walks quiz → paywall → tutorial, and the notes
 /// list is on the far side of all three: nothing about the app proper is reachable
 /// until the paywall is answered.
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var onboarding = Onboarding.shared
+    @State private var store = Store.shared
 
     var body: some View {
         Group {
@@ -16,13 +17,25 @@ struct RootView: View {
                 QuizView(onFinish: onboarding.finishQuiz)
             case .loading:
                 LoadingView(onFinish: onboarding.finishLoading)
-            case .tutorial, .paywall:
+            case .paywall:
+                // A screen of its own rather than a cover over anything: there is
+                // nothing behind it at this point in the flow, and nothing behind it
+                // is the point — it is the only way on.
+                PaywallView(onPurchase: finishPaywall)
+            case .tutorial:
                 // The walkthrough is the seeded note itself, opened on its own — there
-                // is no list behind it to go back to. It stays up under the paywall so
-                // the cover rises over the thing that was just finished.
+                // is no list behind it to go back to.
                 TutorialHost()
             case .done:
-                SessionListView()
+                // The wall is the door to the app, not a screen at the end of
+                // onboarding: a subscription that lapses, is refunded, or was never
+                // bought puts it straight back up. Nothing is deleted by it — what was
+                // written is still there on the other side of paying again.
+                if store.isPro || !Onboarding.showsPaywall {
+                    SessionListView()
+                } else {
+                    PaywallView(onPurchase: {})
+                }
             }
         }
         .animation(.easeInOut(duration: 0.25), value: onboarding.phase)
@@ -45,15 +58,12 @@ struct RootView: View {
             guard ProcessInfo.processInfo.arguments.contains("-resetOnboarding") else { return }
             onboarding.reset()
         }
-        .fullScreenCover(isPresented: .constant(onboarding.phase == .paywall)) {
-            PaywallView(onPurchase: finishPaywall)
-        }
     }
 
-    /// The last tap of the flow: into the app, or — while onboarding is what is being
-    /// worked on — back to the top of it for another pass. The practice note carries
-    /// over from the last pass rather than being wiped for the next one; a debug loop
-    /// is not a good enough reason for the app to throw a note away by itself.
+    /// Out of the paywall into the walkthrough, or — while onboarding is what is being
+    /// worked on — back to the top of the flow for another pass. The practice note
+    /// carries over from the last pass rather than being wiped for the next one; a
+    /// debug loop is not a good enough reason for the app to throw a note away.
     private func finishPaywall() {
         guard Onboarding.loopsForDevelopment else {
             onboarding.finishPaywall()

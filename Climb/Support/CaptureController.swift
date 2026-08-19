@@ -54,6 +54,7 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
                 self.status = .simulated(reason: "No camera on this device. Recording will be simulated.")
                 // Stand-in stops so the picker still lays out while developing on the Simulator.
                 self.zoomOptions = [0.5, 1, 2]
+                self.zoom = Self.preferredZoom
             }
             return
         }
@@ -85,7 +86,8 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
 
                     self.baseZoomFactor = Self.baseZoomFactor(for: camera)
                     if (try? camera.lockForConfiguration()) != nil {
-                        camera.videoZoomFactor = self.baseZoomFactor
+                        camera.videoZoomFactor = max(self.baseZoomFactor * Self.preferredZoom,
+                                                     camera.minAvailableVideoZoomFactor)
                         camera.unlockForConfiguration()
                     }
                     continuation.resume(returning: true)
@@ -104,12 +106,17 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
 
         sessionQueue.async { self.session.startRunning() }
         let stops = Self.zoomStops(for: camera, base: baseZoomFactor)
+        // Attempts are filmed close to the wall, so the widest lens is the useful default.
+        let start = stops.contains(Self.preferredZoom) ? Self.preferredZoom : 1
         await MainActor.run {
             self.zoomOptions = stops
-            self.zoom = 1
+            self.setZoom(start)
             self.status = .ready
         }
     }
+
+    /// Zoom the camera opens at when the phone can reach it.
+    private static let preferredZoom: CGFloat = 0.5
 
     // MARK: Zoom
 

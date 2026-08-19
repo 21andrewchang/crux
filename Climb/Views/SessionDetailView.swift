@@ -27,14 +27,20 @@ struct SessionDetailView: View {
     /// Which page holds the keyboard, if any. A page turn hands focus from one editor
     /// to the next, so this is the pair of them rather than a single flag.
     @State private var focusedTab: NoteTab?
+    /// The check-in, back over the note — what tapping the card on the check-in page
+    /// asks for, when you want to change an answer or read what you said.
+    @State private var isCheckingIn = false
     /// The name in the header, which is the session's rather than any page's.
     @FocusState private var isTitleFocused: Bool
+
     /// How far the open page is scrolled, which is how far the head of the note has
     /// been carried up with it. Its own object rather than a `@State` number so a
     /// scroll redraws the header alone and not the four editors under it.
     @State private var headerScroll = HeaderScroll()
-    /// What the header comes to — the room every page holds open at its top.
-    @State private var headerHeight: CGFloat = 0
+    /// The line the head of the note rests on the bottom edge of — where every page
+    /// starts its text. A position on the screen rather than a height, so the page and
+    /// the header are measuring their top off the same thing and cannot come apart.
+    @State private var headerBottom: CGFloat = 0
 
     /// The global bar's model — the bar and the timer live above the whole
     /// navigation stack (see SessionListView); this page just registers its
@@ -78,10 +84,11 @@ struct SessionDetailView: View {
         // page opening with the title still sitting in it. Does nothing the second
         // time, which is every time after this one.
         session.splitTitleIfNeeded()
-        // The walkthrough is taught on the main page, and a session already checked in
-        // has no reason to open on the card again.
-        let opening: NoteTab = session.id == Tutorial.id || session.readiness != nil ? .main : .checkIn
-        _tab = State(initialValue: opening)
+        // The check-in happens over the whole screen before the note is ever on it
+        // (`CheckInFlow`), so by the time a note opens there is nothing left to answer
+        // — a session begins where a session begins, which is the warm-up. The
+        // walkthrough is taught on the main page and opens there instead.
+        _tab = State(initialValue: session.id == Tutorial.id ? .main : .warmUp)
     }
 
     /// The page holding the keyboard, if the note is being typed in at all.
@@ -103,7 +110,7 @@ struct SessionDetailView: View {
                        tab: $tab,
                        placeholder: guide.isRunning ? NoteDocument.workoutName : NoteDocument.titlePlaceholder,
                        isTitleFocused: $isTitleFocused,
-                       onHeight: { headerHeight = $0 })
+                       onBottom: { headerBottom = $0 })
         }
         .background(Color.black)
         .background(BarParkAnchor(model: barPark))
@@ -136,6 +143,14 @@ struct SessionDetailView: View {
             // A note opened by the new-note button lands typing at its name, the way
             // Notes does — except the name is in the header now, not the first line.
             if startsEditing { isTitleFocused = true }
+            // TEMPORARY: the probe run focuses the page itself after a beat, which is
+            // the tap the header bug is reported against.
+            if ProcessInfo.processInfo.arguments.contains("-headerProbe") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    isTitleFocused = false
+                    editorController.focus()
+                }
+            }
         }
         // The name is the one thing above the tabs, so it saves on its own rather than
         // through a page's editor.
@@ -228,6 +243,21 @@ struct SessionDetailView: View {
         // A sheet, same as the replay page, so recording and replaying an attempt are
         // one shape on screen. The flow decides for itself when swipe-to-dismiss is
         // allowed — free before recording starts, off once a take is on the line.
+        .fullScreenCover(isPresented: $isCheckingIn) {
+            CheckInFlow(
+                answers: session.checkIn,
+                onFinish: { answers in
+                    session.checkIn = answers
+                    session.updatedAt = Date()
+                    isCheckingIn = false
+                    saveChanges()
+                    // The card is a view onto the model and never a copy of it, but it
+                    // is UIKit inside the text view and nothing tells it the model
+                    // moved — so it is asked to read itself again.
+                    editorController.refreshCheckIn()
+                },
+                onSkip: { isCheckingIn = false })
+        }
         .sheet(item: $pendingAttemptID, onDismiss: closeAttemptSheet) { id in
             AttemptFlowView(
                 attemptID: id,
@@ -308,7 +338,13 @@ struct SessionDetailView: View {
                     // view lays its children out inside the bars whatever the
                     // container was told, and a page inset by them is a page cut off
                     // in a straight line at both ends.
-                    .ignoresSafeArea(.container, edges: .vertical)
+                    //
+                    // The keyboard is in there with the bars deliberately. Left out,
+                    // SwiftUI slides the whole page up to keep the caret clear of the
+                    // keyboard — and the head of the note, which ignores the keyboard,
+                    // stays where it is, so the note ends up printed behind the pills.
+                    // The page handles the keyboard itself, in its own bottom inset.
+                    .ignoresSafeArea(.all, edges: .vertical)
                     .tag(page)
             }
         }
@@ -318,7 +354,7 @@ struct SessionDetailView: View {
         // editor tinted, which showed its frame ending exactly at the nav bar and the
         // toolbar — and the one inside is what stops each page laying itself out
         // inside them.
-        .ignoresSafeArea(.container, edges: .vertical)
+        .ignoresSafeArea(.all, edges: .vertical)
     }
 
     private func editor(for page: NoteTab) -> some View {
@@ -349,8 +385,9 @@ struct SessionDetailView: View {
             },
             onChange: saveChanges,
             onFocusChange: { focused in focusChanged(page, focused: focused) },
+            onOpenCheckIn: { isCheckingIn = true },
             onScroll: { pageScrolled($0, from: page) },
-            topInset: headerHeight
+            topInset: headerBottom
         )
     }
 

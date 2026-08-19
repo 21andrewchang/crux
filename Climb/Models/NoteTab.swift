@@ -28,6 +28,43 @@ enum NoteTab: Int, CaseIterable, Identifiable, Hashable {
     /// the reason that tab exists.
     var showsCheckIn: Bool { self == .checkIn }
 
+    /// Whether the page scrolls at all.
+    ///
+    /// Every page but the check-in's. The other three are written into and grow past
+    /// the screen. The check-in is not a document — it is one card, sized to fit,
+    /// and it holds still: drag it and nothing moves.
+    ///
+    /// That is not only about feel. A row you answer by dragging cannot live on a
+    /// page that scrolls, because the two want the same gesture and the scroll wins
+    /// every ambiguous one. Holding the page still is what buys the rows their drag.
+    var scrolls: Bool { self != .checkIn }
+
+    /// Whether the page can be written into.
+    ///
+    /// Every page but the check-in's. That one is a form, not a document — there is
+    /// nothing on it you would want to type next to, and a caret landing between the
+    /// boxes with the keyboard coming up over them is the whole page getting in its
+    /// own way. Tapping it should answer a question or do nothing.
+    var editable: Bool { self != .checkIn }
+
+    /// Whether text on the page can be selected.
+    ///
+    /// Every page but the check-in's, for the same reason it cannot be typed into.
+    /// There is one line of text on that page and it is invisible — the card sits on
+    /// it — so the only thing a long press there can do is throw a selection highlight
+    /// across the card and put a menu over it, which is a way of copying nothing.
+    ///
+    /// Turning it off leaves the boxes working: the card is a real subview of the text
+    /// view, and hit-testing reaches it through the view hierarchy rather than through
+    /// any of the gesture recognisers this switches off.
+    var selectsText: Bool { self != .checkIn }
+
+    /// Whether the page's content sits in the middle of the screen rather than at the
+    /// top of it. Only the check-in's: it is one card of a known size on a page that
+    /// does not scroll, so there is no reason for it to hang off the top edge with the
+    /// rest of the screen empty under it.
+    var centersContent: Bool { self == .checkIn }
+
     /// Whether an empty page here says what the bar's buttons do. Only the main page:
     /// the hints are about recording climbs, which is what that page is for.
     var showsHints: Bool { self == .main }

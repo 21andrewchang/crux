@@ -205,6 +205,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Crux;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crux records a video of each attempt so you can review your beta.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crux records audio with your attempt videos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -237,6 +238,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Crux;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crux records a video of each attempt so you can review your beta.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crux records audio with your attempt videos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

@@ -63,10 +63,10 @@ enum NoteDocument {
     /// only, never serialized, so a reopened note starts unfolded.
     static let foldedHeading = NSAttributedString.Key("climbFoldedHeading")
 
-    /// A step under the section above it, a step over the attempts under it: the note
-    /// reads section, climb, attempt, and each rung is smaller and lighter than the
-    /// one it hangs off. Short of the section's bold — that weight is the section's.
-    static let headerFont = UIFont.systemFont(ofSize: 20, weight: .semibold)
+    /// A climb heading sits under the attempts it heads in size — 21 bold section,
+    /// 16 semibold attempt, 15 semibold climb. A climb is a name in the note, not a
+    /// banner, and its colour and dot do the telling-apart, not its size.
+    static let headerFont = UIFont.systemFont(ofSize: 15, weight: .semibold)
 
     /// Trailing room held open on a climb heading's line for the attempt count drawn
     /// between the name and the fold chevron.
@@ -79,11 +79,36 @@ enum NoteDocument {
     /// lands exactly where that first line would.
     static let headingSpacing: CGFloat = 8
 
-    /// Air above a climb heading, on top of the room its bubble already needs. A climb
-    /// starts a new stretch of the note, and what came before it — usually the last
-    /// attempt of the climb before — should end well clear of where the next one
-    /// begins.
-    static let climbHeadingLead: CGFloat = 14
+    /// What a climb heading keeps under itself instead. What it heads is a card, not a
+    /// line of text, and a card brings `blockLead` of its own air with it — the two
+    /// stacked left the first attempt sitting well clear of the name it is filed
+    /// under. A section keeps the full room, because what it heads is a heading.
+    ///
+    /// Held against `blockLead` rather than set on its own: the two are the gap under
+    /// a climb heading, and moving one without the other moves that gap.
+    static let climbHeadingTrail: CGFloat = 7
+
+    /// Air under everything a climb heads, before the next climb starts. Hung on the
+    /// last line of the group rather than above the heading below it, because that is
+    /// the thing the gap is made of: a climb with its attempts open ends well clear of
+    /// the next name, and a folded one — whose last line collapses to a hairline along
+    /// with the rest of its group — sits directly under the one above it, so a note of
+    /// collapsed climbs reads as a list instead of a column of gaps.
+    ///
+    /// A climb heading with nothing under it yet has no last line to hang it on and
+    /// keeps the room above itself instead, so two headings never sit flush.
+    static let climbGroupTrail: CGFloat = 14
+
+    /// Air above a section heading — the same idea as `climbGroupTrail` and a good
+    /// deal more of it. A section is the largest break the note has, and the climbs
+    /// filed under the one before it run right up to where the next one starts; the
+    /// gap is what says the list has ended rather than carried on.
+    static let sectionHeadingLead: CGFloat = 30
+
+    /// A step off full strength: the name is a label on the stretch of note under it,
+    /// and at full colour it shouted over the attempts it heads. The dot before it is
+    /// drawn at the same strength, so mark and name read as one thing.
+    static let headerTintAlpha: CGFloat = 0.7
 
     /// The name reads in the climb's colour, with a dot of that colour drawn before it
     /// by the layout fragment. The line holds a lane open for the dot the same way a
@@ -91,8 +116,7 @@ enum NoteDocument {
     static func headerAttributes(tint: UIColor) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        paragraph.paragraphSpacingBefore = climbHeadingLead
-        paragraph.paragraphSpacing = headingSpacing
+        paragraph.paragraphSpacing = climbHeadingTrail
         paragraph.firstLineHeadIndent = textIndent + ClimbHeaderLayoutFragment.dotGutter
         paragraph.headIndent = textIndent + ClimbHeaderLayoutFragment.dotGutter
         // Stops short of the trailing edge, where the attempt count and the fold
@@ -100,7 +124,7 @@ enum NoteDocument {
         paragraph.tailIndent = -(textIndent + chevronReserve + countReserve)
         return [
             .font: headerFont,
-            .foregroundColor: tint,
+            .foregroundColor: tint.withAlphaComponent(headerTintAlpha),
             .paragraphStyle: paragraph,
             climbHeader: true,
         ]
@@ -123,21 +147,26 @@ enum NoteDocument {
     /// else you typed, just quieter, tucked under their row.
     /// The shape of a note's line. The last one of a row's notes takes a copy with a
     /// deeper trailing space — see `quoteEndSpacing`.
+    ///
+    /// Indented by the card's own padding rather than the page's: these lines are
+    /// inside the box the row started, and have to clear its edges the way the row's
+    /// name does.
     static let quoteParagraph: NSParagraphStyle = {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         // A step more than body text, so the quote reads as a block that ends before
         // whatever comes next rather than running into it.
         paragraph.paragraphSpacing = 8
-        paragraph.firstLineHeadIndent = textIndent
-        paragraph.headIndent = textIndent
-        paragraph.tailIndent = -textIndent
+        paragraph.firstLineHeadIndent = AttemptRowView.cardPadding
+        paragraph.headIndent = AttemptRowView.cardPadding
+        paragraph.tailIndent = -AttemptRowView.cardPadding
         return paragraph
     }()
 
-    /// A step down from body text: what is written under a row is a note on that go,
-    /// read after the name above it, so it is set smaller as well as quieter.
-    static let quoteFont = UIFont.preferredFont(forTextStyle: .subheadline)
+    /// The bottom of the note's ladder: what is written under a row is a note on that
+    /// go, read after the name above it, so it is set smaller as well as quieter — and
+    /// far enough under the 16 of that name to be told from it at a glance.
+    static let quoteFont = UIFont.preferredFont(forTextStyle: .footnote)
 
     static func quoteAttributes(for id: UUID) -> [NSAttributedString.Key: Any] {
         let paragraph = quoteParagraph
@@ -191,9 +220,9 @@ enum NoteDocument {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         paragraph.paragraphSpacing = 8
-        paragraph.firstLineHeadIndent = textIndent + bookmarkGutter
-        paragraph.headIndent = textIndent + bookmarkGutter
-        paragraph.tailIndent = -(textIndent + clockReserve)
+        paragraph.firstLineHeadIndent = AttemptRowView.cardPadding + bookmarkGutter
+        paragraph.headIndent = AttemptRowView.cardPadding + bookmarkGutter
+        paragraph.tailIndent = -(AttemptRowView.cardPadding + clockReserve)
         paragraph.lineBreakMode = .byTruncatingTail
         return paragraph
     }()
@@ -248,20 +277,25 @@ enum NoteDocument {
         ]
     }
 
-    /// Trailing room held open on a heading's line for the fold chevron drawn at its
-    /// right edge.
+    /// Trailing room held open on a heading's line for the fold chevron: at the right
+    /// edge on a climb, a step past the name on a section — either way the name wraps
+    /// this much early so the chevron always has somewhere to stand.
     static let chevronReserve: CGFloat = 28
 
-    static let sectionFont = UIFont.systemFont(ofSize: 22, weight: .bold)
+    /// The top rung of the note's three, and the widest step: a section, the climbs
+    /// under it and the attempts under those have to be told apart at a glance, from
+    /// scrolling speed, without reading a word of them.
+    static let sectionFont = UIFont.systemFont(ofSize: 21, weight: .bold)
 
     /// A section heading: bigger and heavier than body, well short of the title —
     /// a subheader. The text on the line *is* the section's name.
     static var sectionHeaderAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
-        // Spaced like body text above — a section heading is a line of the note set
-        // bigger, not a block set apart, so nothing extra opens over it — and like
-        // every heading under it.
+        // Set apart from what came before it, and spaced like every heading under it
+        // below. `applyStyles` takes the room above back off a section that opens the
+        // note, which has nothing up there to stand clear of.
         paragraph.lineSpacing = 3
+        paragraph.paragraphSpacingBefore = sectionHeadingLead
         paragraph.paragraphSpacing = headingSpacing
         // Flush left, like the title: the subheader hangs at the margin while the
         // body text under it keeps its indent.
@@ -646,12 +680,21 @@ enum NoteDocument {
     /// Air above a block, so one card never sits flush against whatever ended above
     /// it — an expanded attempt's notes run right down to their card's edge, and the
     /// next row began exactly where they stopped.
-    static let blockLead: CGFloat = 8
+    static let blockLead: CGFloat = 2
 
-    /// Trailing space on the last line of a note. The card takes
-    /// `BookmarkLayoutFragment.cardBottomPadding` of it as its own bottom padding;
-    /// what is left over is the gap under the card, before the next block's own lead.
-    static let quoteEndSpacing: CGFloat = 20
+    /// The slack a row's own line leaves under the card it draws: the block sits on
+    /// the baseline, and the line break sharing the line with it still carries the
+    /// body font, whose descent hangs below the card as nobody's-space.
+    static let rowDescent: CGFloat = ceil(-UIFont.preferredFont(forTextStyle: .body).descender)
+
+    /// Trailing space on the last line of a note: the padding the card takes out of it
+    /// as its own bottom, plus the same slack a row leaves under its card.
+    ///
+    /// The gap between two attempts is meant to be one thing — the next block's own
+    /// `blockLead` — and nothing about whether the notes between them are open should
+    /// touch it. Any more room than this and an open row pushed the next one down; any
+    /// less and it pulled it up.
+    static let quoteEndSpacing: CGFloat = BookmarkLayoutFragment.cardBottomPadding + rowDescent
 
     /// A row draws its own height exactly; the body's line and paragraph spacing on top
     /// of that just reads as slack above and below it, so its line gets none of that —
@@ -689,6 +732,21 @@ enum NoteDocument {
         set.formUnion(CharacterSet(charactersIn: "-–—/\\([{\"“·,;:"))
         return set
     }()
+
+    /// The same rule, for text that is not in the document — the workout's name in the
+    /// header. Built rather than swapped in place, since there is no caret parked in a
+    /// `String`.
+    static func capitalizedName(_ name: String) -> String {
+        var raised = ""
+        var startsWord = true
+        for scalar in name.unicodeScalars {
+            let letter = String(scalar)
+            let upper = letter.uppercased()
+            raised += (startsWord && upper.utf16.count == 1) ? upper : letter
+            startsWord = wordBreaks.contains(scalar)
+        }
+        return raised
+    }
 
     private static func capitalizeNames(on lines: [NSRange], in storage: NSMutableAttributedString) {
         let text = storage.string as NSString
@@ -910,12 +968,48 @@ enum NoteDocument {
         // line that has somehow ended up carrying both draws as the climb it
         // serializes as rather than as a section that reopens as one.
         for line in sections {
-            storage.addAttributes(sectionHeaderAttributes, range: line)
+            var attributes = sectionHeaderAttributes
+            // The first line of the note has nothing above it to be clear of, and the
+            // room would only push it off the top of the page.
+            if line.location == 0,
+               let paragraph = (attributes[.paragraphStyle] as? NSParagraphStyle)?
+                   .mutableCopy() as? NSMutableParagraphStyle {
+                paragraph.paragraphSpacingBefore = 0
+                attributes[.paragraphStyle] = paragraph
+            }
+            storage.addAttributes(attributes, range: line)
             shrinkTrailingFiller(in: storage, line: line, font: sectionFont)
         }
+        let headingStarts = (headings + sections).map(\.location).sorted()
         for line in headings {
             let name = headingName(text.substring(with: line))
-            storage.addAttributes(headerAttributes(tint: ClimbTint.color(for: name)), range: line)
+            var attributes = headerAttributes(tint: ClimbTint.color(for: name))
+            // The gap before the next climb, hung on the bottom of this one's group —
+            // the last line before the heading that ends it. Nothing is hung on the
+            // final group in the note: there is nothing under it to be clear of.
+            let start = NSMaxRange(line)
+            let end = headingStarts.first(where: { $0 >= start })
+            if let end, start < end {
+                let last = text.lineRange(for: NSRange(location: end - 1, length: 0))
+                // Built on whatever the line already carries — a row's pinned height, a
+                // card's closing room — so the gap adds to it rather than replaces it.
+                let current = storage.attribute(.paragraphStyle, at: last.location,
+                                                effectiveRange: nil) as? NSParagraphStyle
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.setParagraphStyle(current ?? NSParagraphStyle.default)
+                paragraph.paragraphSpacing += climbGroupTrail
+                storage.addAttribute(.paragraphStyle, value: paragraph, range: last)
+            } else if end != nil, !folds.contains(line),
+                      let paragraph = (attributes[.paragraphStyle] as? NSParagraphStyle)?
+                          .mutableCopy() as? NSMutableParagraphStyle {
+                // Nothing under this heading yet, so there is no last line to hang the
+                // gap on: the heading's own trailing room stands in for its group's, and
+                // the heading below it still lands clear of this one. A folded empty
+                // climb is left alone — it collapses to nothing, like any other.
+                paragraph.paragraphSpacing += climbGroupTrail
+                attributes[.paragraphStyle] = paragraph
+            }
+            storage.addAttributes(attributes, range: line)
             shrinkTrailingFiller(in: storage, line: line, font: headerFont)
         }
 

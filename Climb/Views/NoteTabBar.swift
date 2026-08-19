@@ -10,10 +10,6 @@ import SwiftUI
 struct NoteTabBar: View {
     @Binding var selection: NoteTab
 
-    /// Ties the lit pill to the tab it is under, so turning a page slides it across
-    /// rather than blinking it out and in.
-    @Namespace private var pill
-
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
@@ -49,6 +45,8 @@ struct NoteTabBar: View {
 
     /// Dark grey at rest, lighter once picked, and the word goes from dim to plain
     /// white with it — the pill is never the only thing saying which page you are on.
+    /// The lit pill is painted where it sits rather than travelling between pills:
+    /// picking a page changes a colour, it doesn't move anything.
     ///
     /// Solid greys rather than a few percent of white: the row sticks at the top of
     /// the screen with the note scrolling underneath it, and a translucent pill would
@@ -62,14 +60,8 @@ struct NoteTabBar: View {
             .padding(.vertical, 6)
             .padding(.horizontal, 12)
             .background {
-                ZStack {
-                    Capsule(style: .continuous).fill(Color(white: 0.11))
-                    if isCurrent {
-                        Capsule(style: .continuous)
-                            .fill(Color(white: 0.26))
-                            .matchedGeometryEffect(id: "selected", in: pill)
-                    }
-                }
+                Capsule(style: .continuous)
+                    .fill(Color(white: isCurrent ? 0.26 : 0.11))
             }
             .contentShape(Capsule(style: .continuous))
     }

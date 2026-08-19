@@ -1,14 +1,20 @@
 import Foundation
 import Observation
 
-/// First-run flow: a quiz, then the interactive tutorial note, then a hard paywall.
+/// First-run flow: a quiz, then a hard paywall, then the interactive tutorial note.
+///
+/// The wall goes before the walkthrough rather than after it, which is the order the
+/// two screens are actually worth something in: the quiz is what builds any reason to
+/// pay, and every screen between that and the asking spends it. The walkthrough on the
+/// far side stops being a free look at the product and becomes the first thing done
+/// with it — which is what a trial has to be used for to be worth renewing.
 ///
 /// Where the user got to is written down as they go, so a launch that lands in the
 /// middle of the flow opens on the screen they left rather than at the top: the phase,
 /// and inside the quiz the question itself. Only `isComplete` is behind them for good.
 @Observable
 final class Onboarding {
-    enum Phase: String { case quiz, loading, tutorial, paywall, done }
+    enum Phase: String { case quiz, loading, paywall, tutorial, done }
 
     static let shared = Onboarding()
 
@@ -16,7 +22,7 @@ final class Onboarding {
     /// straight over to the app — the screen and everything behind it (`Store`,
     /// the products, the purchase) is still here, just not in the way while the
     /// rest of onboarding is being worked on.
-    static let showsPaywall = false
+    static let showsPaywall = true
 
     /// Off: a purchase opens the app, which is what it is for. On, it starts the run
     /// over from the quiz instead, so the flow can be walked end to end as many times as
@@ -62,26 +68,28 @@ final class Onboarding {
         phase = defaults.string(forKey: Self.phaseKey).flatMap(Phase.init) ?? .quiz
         quizIndex = defaults.integer(forKey: Self.quizIndexKey)
         answers = defaults.dictionary(forKey: Self.answersKey) as? [String: String] ?? [:]
-        // Someone left standing on the paywall by an earlier build is let through
-        // rather than held on a screen that is no longer shown.
-        if !Self.showsPaywall, phase == .paywall { phase = .done }
+        // Someone left standing on the paywall by an earlier build is let through to
+        // the walkthrough rather than held on a screen that is no longer shown.
+        if !Self.showsPaywall, phase == .paywall { phase = .tutorial }
     }
 
     /// Out of the quiz into the beat where the answers are made something of.
     func finishQuiz() { phase = .loading }
 
-    func finishLoading() { phase = .tutorial }
+    func finishLoading() { phase = Self.showsPaywall ? .paywall : .tutorial }
 
-    /// Back out of the walkthrough into the quiz — onto its last question, which is the
-    /// screen you just came off. The index is left where the quiz ended for exactly
-    /// this: back is one step back, not a return to the beginning.
+    /// Back out of the walkthrough into the quiz — onto its last question. The index is
+    /// left where the quiz ended for exactly this: back is one step back, not a return
+    /// to the beginning. It skips back over the paywall, which is behind them for good
+    /// once it has been answered.
     func backToQuiz() { phase = .quiz }
 
-    /// Leaving the walkthrough — Skip and Done are the same door, one taken early. It
-    /// opens on the paywall or straight into the app, depending on `showsPaywall`.
-    func leaveTutorial() { phase = Self.showsPaywall ? .paywall : .done }
+    /// Leaving the walkthrough — Skip and Done are the same door, one taken early, and
+    /// both open on the app itself. This is the end of the flow now.
+    func leaveTutorial() { phase = .done }
 
-    func finishPaywall() { phase = .done }
+    /// Paid, and into the walkthrough: the first thing done with what was just bought.
+    func finishPaywall() { phase = .tutorial }
 
     /// Debug helper: back to the top of the flow. Where you are, and nothing you own —
     /// there is no path in the app that deletes a note without being asked to.

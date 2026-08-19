@@ -122,24 +122,24 @@ final class AttemptRowView: UIView {
     /// A dark dark grey — a step off the page, nowhere near a light card. The notes
     /// written under the row are drawn on the same ground by `BookmarkLayoutFragment`,
     /// so the row and its notes read as one box.
-    static let cardFill = UIColor(white: 0.085, alpha: 1)
+    static let cardFill = UIColor(white: 0.06, alpha: 1)
     static let cardRadius: CGFloat = 14
-    /// How far the card reaches past the text column on each side: out into the page's
-    /// own margin. The box is what steps out, so nothing written inside it has to step
-    /// in — the name, the dot on the heading above it and every line of prose in the
-    /// note keep the one left edge they have.
-    static let cardBleed: CGFloat = 12
+    /// The card runs the width of the text column, edge to edge: its left edge is the
+    /// left edge of the dot on the climb heading above it, and its right edge is where
+    /// that heading's own chevron stops. Everything written inside it steps in by
+    /// `cardPadding` to clear those edges.
+    static let cardPadding: CGFloat = 12
 
-    static let thumbnailInset: CGFloat = NoteDocument.textIndent
+    static let thumbnailInset: CGFloat = cardPadding
     /// The gap between the name and the rating under it. Read by the video too: it is
     /// squared off the pair of lines beside it, so the three edges line up.
     static let lineGap: CGFloat = 6
     /// The gap between the name and the video at the other end of the row.
     static let labelGap: CGFloat = 14
-    /// Where the row's name starts: the page's own margin, the same left edge every
-    /// other line of the note hangs from, so a clip's text and the attempt's name
-    /// read down one line.
-    static let textColumn: CGFloat = NoteDocument.textIndent
+    /// Where the row's name starts: a step inside the card, the same step the clips
+    /// written under it take, so a clip's text and the attempt's name read down one
+    /// line.
+    static let textColumn: CGFloat = cardPadding
     /// Where the bookmarks on the note lines below start. Its left edge, not its
     /// middle: the mark stands flush with the "A" of the name above it, and the words
     /// of the clip step past it.
@@ -155,8 +155,13 @@ final class AttemptRowView: UIView {
     private let titleLabel = UILabel()
     /// The rating, worn as a tinted tag — the chip a climb heading used to wear.
     private let effortPill = TagPillLabel()
+    /// How long the take ran — the detail you check once you have found the go you
+    /// wanted, so it follows the rating.
+    private let lengthLabel = UILabel()
+    /// How many clips were cut out of it, at the end of the line: the count stands in
+    /// for the clips themselves, and slides away when they are written out below.
     private let detailLabel = UILabel()
-    private lazy var detailRow = UIStackView(arrangedSubviews: [effortPill, detailLabel])
+    private lazy var detailRow = UIStackView(arrangedSubviews: [effortPill, lengthLabel, detailLabel])
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -204,7 +209,7 @@ final class AttemptRowView: UIView {
         // want; the length beside it is a detail you check once. The bottom rung of
         // the note's three: a step under the climb heading it is filed under, and a
         // step over the notes written below it.
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         titleLabel.textColor = .label
         // The name is exactly as tall as one line of it — it, not the video beside it,
         // is what sets the height the two share.
@@ -218,6 +223,11 @@ final class AttemptRowView: UIView {
         // found the go you wanted.
         effortPill.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        lengthLabel.font = .systemFont(ofSize: 13)
+        lengthLabel.textColor = .secondaryLabel
+        lengthLabel.numberOfLines = 1
+        lengthLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         detailLabel.font = .systemFont(ofSize: 13)
         detailLabel.textColor = .secondaryLabel
         detailLabel.numberOfLines = 1
@@ -227,10 +237,14 @@ final class AttemptRowView: UIView {
         detailRow.spacing = 8
         detailRow.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(detailRow)
+        // The count slides in from behind the length rather than out from beside it,
+        // so everything to its left has to be in front of it.
+        detailRow.bringSubviewToFront(effortPill)
+        detailRow.bringSubviewToFront(lengthLabel)
 
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -Self.cardBleed),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: Self.cardBleed),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor),
             container.topAnchor.constraint(equalTo: topAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
 
@@ -250,8 +264,10 @@ final class AttemptRowView: UIView {
                                                 constant: Self.textColumn),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
                                                  constant: -Self.labelGap),
-            // Title sits just above center so the pair of labels reads as one centered block.
-            titleLabel.bottomAnchor.constraint(equalTo: centerYAnchor, constant: 2),
+            // The name, the rating and the video are one block, centred as one — so
+            // the room over the name and the room under the rating are the same, and a
+            // row with its clips folded away sits in the middle of its own card.
+            thumbnailView.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             detailRow.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailRow.trailingAnchor.constraint(lessThanOrEqualTo: thumbnailView.leadingAnchor,
@@ -261,6 +277,55 @@ final class AttemptRowView: UIView {
             // unrated attempt's video is the same square as a rated one's.
             detailRow.heightAnchor.constraint(equalToConstant: TagPillLabel.height),
         ])
+    }
+
+    /// The same mark the clips themselves carry in their gutter, held back to a
+    /// fraction of its yellow: down here it is a label on a count, not a link to
+    /// follow, and at full strength it pulled the eye off the name above it.
+    private static let clipGlyphAlpha: CGFloat = 0.55
+
+    private static let clipGlyph: UIImage = {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        let mark = UIImage(systemName: "bubble.left.fill", withConfiguration: configuration)!
+            .withTintColor(.systemYellow, renderingMode: .alwaysOriginal)
+        // Drawn down rather than tinted down: an alpha carried on the tint colour is
+        // not honoured the same way everywhere a symbol is composed.
+        return UIGraphicsImageRenderer(size: mark.size).image { _ in
+            mark.draw(at: .zero, blendMode: .normal, alpha: clipGlyphAlpha)
+        }
+    }()
+
+    /// The mark the length wears, in the text's own grey: it says the number after it
+    /// is a running time and not a count, which is the only thing the word "video"
+    /// was there to do.
+    private static let lengthGlyph: UIImage = {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        return UIImage(systemName: "play.fill", withConfiguration: configuration)!
+            .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+    }()
+
+    /// A mark and a number, set the way the clip count beside it is set: the glyph
+    /// centred on the digits' own cap height so the two sit on one line.
+    private static func glyphed(_ glyph: UIImage, _ text: String) -> NSAttributedString {
+        let font = UIFont.systemFont(ofSize: 13)
+        let attachment = NSTextAttachment()
+        attachment.image = glyph
+        attachment.bounds = CGRect(x: 0,
+                                   y: (font.capHeight - glyph.size.height) / 2,
+                                   width: glyph.size.width,
+                                   height: glyph.size.height)
+
+        let line = NSMutableAttributedString(attachment: attachment)
+        line.append(NSAttributedString(
+            string: " " + text,
+            attributes: [.font: font, .foregroundColor: UIColor.secondaryLabel]))
+        return line
+    }
+
+    /// How many clips were cut out of the take: the number alone, behind the mark they
+    /// all wear — the mark says what is being counted.
+    private static func clipCount(_ clips: Int) -> NSAttributedString {
+        glyphed(clipGlyph, "\(clips)")
     }
 
     /// A tap somewhere on this row, in the row's own coordinates.
@@ -285,6 +350,36 @@ final class AttemptRowView: UIView {
         }
     }
 
+    /// Whether the count is currently out. A restyle walks every row and says this
+    /// again whether or not anything changed, and re-running the slide on each one
+    /// would stutter it.
+    private var showsClipCount = true
+
+    /// The count tucked away: far enough left that it is behind the length beside it,
+    /// which is the direction it came from — the clips it counts are written out below
+    /// the row once the row is open, and a number saying how many of them there are is
+    /// the same thing said twice.
+    private var tuckedTransform: CGAffineTransform {
+        CGAffineTransform(translationX: -(detailLabel.intrinsicContentSize.width + detailRow.spacing),
+                          y: 0)
+    }
+
+    private func setClipCount(shown: Bool, animated: Bool) {
+        guard shown != showsClipCount else { return }
+        showsClipCount = shown
+        let apply = {
+            self.detailLabel.transform = shown ? .identity : self.tuckedTransform
+            self.detailLabel.alpha = shown ? 1 : 0
+        }
+        guard animated else { return apply() }
+        UIView.animate(withDuration: 0.32,
+                       delay: 0,
+                       usingSpringWithDamping: 0.9,
+                       initialSpringVelocity: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction],
+                       animations: apply)
+    }
+
     /// Whether there are notes under this row, and whether they're closed. With notes
     /// the card carries on downward, so its own corners stop at the top; without them
     /// it is the whole box and rounds all four.
@@ -294,15 +389,21 @@ final class AttemptRowView: UIView {
             ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
             : [.layerMinXMinYCorner, .layerMaxXMinYCorner,
                .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        // Open, the clips speak for themselves. Off screen the row is being built or
+        // rebuilt, and there is nothing to animate from.
+        setClipCount(shown: !(has && !folded), animated: window != nil)
     }
 
     func configure(with snapshot: AttemptSnapshot) {
-        // Name, rating, and how many clips were cut out of the take — the clips
+        // Name, rating, length, and how many clips were cut out of the take — the clips
         // themselves are the lines under the row, in the document itself.
         titleLabel.text = "Attempt \(snapshot.ordinal)"
         effortPill.show(snapshot.effort)
+        lengthLabel.attributedText = Self.glyphed(Self.lengthGlyph, snapshot.duration.clockString)
         let clips = NoteTimestamp.clips(in: snapshot.notes).count
-        detailLabel.text = clips == 1 ? "1 Clip" : "\(clips) Clips"
+        detailLabel.attributedText = Self.clipCount(clips)
+        // A different number is a different width to hide behind the tag.
+        if !showsClipCount { detailLabel.transform = tuckedTransform }
         thumbnailView.image = snapshot.thumbnail
         playGlyph.isHidden = snapshot.thumbnail == nil
     }

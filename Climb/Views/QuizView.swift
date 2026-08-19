@@ -22,6 +22,14 @@ struct QuizView: View {
         /// their own colour and not for changing — so the second pass is read against
         /// the first rather than made blind to it.
         var carriesOver: String?
+        /// Answered with a number instead of a list: the rows give way to a ruler, and
+        /// `options` goes unread.
+        var measure: BodyMeasure?
+        /// A quiet line under the question, for the ones that need a word of
+        /// explanation — what a term means, or that more than one answer is allowed.
+        /// It sits inside the space the header already holds, so adding one to a
+        /// question never moves that screen's answers.
+        var note: String?
     }
 
     /// The vocabulary strengths and weaknesses share, so that "good at" and "held back
@@ -34,22 +42,29 @@ struct QuizView: View {
                                      "Route reading", "Flexibility", "Mentality",
                                      "Recovery"]
 
+    /// The grade ladder, whole and unchanged on both screens that ask about it: what
+    /// you're on and what you're after are the same rungs read twice, so the gap
+    /// between the two answers is a number of rungs rather than something to work out.
+    private static let grades = ["V0–V2", "V3–V5", "V6–V8", "V9–V11", "V12+"]
+
     // Ordered by how much thinking each one costs, cheapest first: facts about you,
     // then facts about your climbing, then a judgement about yourself, and only at the
     // end what you want out of the app — the one question worth arriving at with the
-    // rest already said. Weight, height and ape index belong in the first stretch too,
-    // but they need a screen that takes a number rather than a tap.
+    // rest already said. The three numbers sit in the first stretch with the other
+    // facts, on a ruler rather than a list.
     static let questions: [Question] = [
         .init(id: "age", title: "How old are you?",
               options: ["Under 18", "18–24", "25–34", "35–44", "45+"]),
-        .init(id: "gender", title: "What's your gender?",
-              options: ["Man", "Woman", "Prefer not to say"]),
-        .init(id: "grade", title: "What are you projecting?",
-              options: ["V0–V2", "V3–V5", "V6–V8", "V9+"]),
+        .init(id: "height", title: "How tall are you?", options: [], measure: .height),
+        .init(id: "weight", title: "What do you weigh?", options: [], measure: .weight),
+        // Asked straight after height because that is what it is measured against, and
+        // asked at all because it is the one body number climbers already know.
+        .init(id: "apeIndex", title: "What's your ape index?", options: [],
+              measure: .apeIndex, note: "Arm span minus height."),
+        .init(id: "grade", title: "What's your project grade?", options: grades),
         // Straight after what you're on, in the same buckets, so the two together are
         // the gap the app is for.
-        .init(id: "dreamGrade", title: "What's your dream grade?",
-              options: ["V3–V5", "V6–V8", "V9–V11", "V12+"]),
+        .init(id: "goalGrade", title: "What's your goal grade?", options: grades),
         .init(id: "experience", title: "How long have you been climbing?",
               options: ["Just started", "Under a year", "1–3 years", "3+ years"]),
         .init(id: "frequency", title: "How often do you climb?",
@@ -60,14 +75,30 @@ struct QuizView: View {
         // strengths screen a relief rather than a boast. The same ten rows twice over,
         // marked red then green — the second screen keeps the red so it reads as one
         // list being sorted rather than the same question asked again.
-        .init(id: "weaknesses", title: "Your weaknesses",
-              options: attributes, allowsMultiple: true, tint: .red),
-        .init(id: "strengths", title: "Your strengths",
+        .init(id: "weaknesses", title: "What holds you back?",
+              options: attributes, allowsMultiple: true, tint: .red,
+              note: "Pick as many as you like."),
+        .init(id: "strengths", title: "What are you good at?",
               options: attributes, allowsMultiple: true, tint: .green,
-              carriesOver: "weaknesses"),
+              carriesOver: "weaknesses", note: "Your weaknesses stay marked in red."),
         .init(id: "goal", title: "What are you here for?",
               options: ["Send a project", "Get stronger", "Fix my technique", "Track my sessions"]),
     ]
+
+    /// Whether this question's rows need the screen to move: the two attribute lists
+    /// are ten rows long and can't be seen at once, every other question fits.
+    private var scrolls: Bool { rows.count > 6 }
+
+    /// What the arrows and the home indicator take off the bottom of the screen, held
+    /// clear at the end of a list so the last row can be reached.
+    private static let arrowRoom: CGFloat = 120
+
+    /// How black either end of the screen goes: dark enough to read the question and
+    /// the arrows against, light enough that a row under it is still a row.
+    private static let veil = Color.black.opacity(0.8)
+
+    /// How far past the question the dark runs before it gives out.
+    private static let fadeRun: CGFloat = 64
 
     /// The row that opens the field. Kept as a constant rather than a literal because
     /// it is both a label on screen and a key in `chosen`.
@@ -83,7 +114,27 @@ struct QuizView: View {
     /// rather than a blank screen.
     @State private var chosen: Set<String> = []
     @State private var other = ""
+    /// The ruler's answer, in metric, whichever units it is being shown in.
+    @State private var measureValue: Double = 0
+    /// Which units the numbers are read in. Kept across launches and across all three
+    /// number screens, and started from wherever the phone is set up — it is a way of
+    /// reading the answer, never part of it.
+    @AppStorage("usesImperial") private var imperial = Locale.current.measurementSystem != .metric
     @FocusState private var otherFocused: Bool
+    /// Two lines of question with a line of note under them, held whether or not a
+    /// given screen fills it — and grown with the type rather than staying put while
+    /// the words get bigger.
+    @ScaledMetric(relativeTo: .title) private var headerBlock: CGFloat = 98
+    /// How much of the screen the question takes, measured rather than assumed: its own
+    /// height, for what lays out under it, and where its bottom edge falls on the glass,
+    /// for the list that runs behind it.
+    @State private var chromeHeight: CGFloat = 190
+    @State private var chromeBottom: CGFloat = 250
+    /// The height of the list's own window on the screen, which is the screen.
+    @State private var listHeight: CGFloat = 800
+    /// The strip of screen the home indicator sits in, which the arrow bar covers and
+    /// so has to hold clear itself.
+    @State private var safeBottom: CGFloat = 34
     @State private var picked = UIImpactFeedbackGenerator(style: .medium)
     @State private var unpicked = UIImpactFeedbackGenerator(style: .light)
 
@@ -109,63 +160,33 @@ struct QuizView: View {
 
     /// Forward is off until the question has been answered — and an empty "something
     /// else" is not an answer, so ticking that row alone doesn't open the door.
-    private var canAdvance: Bool { !answerText.isEmpty }
+    private var canAdvance: Bool { question.measure != nil || !answerText.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            progress
-
-            Text(question.title)
-                .font(.largeTitle.weight(.semibold))
-                .padding(.top, 48)
-                .padding(.bottom, 28)
-
-            ScrollView {
-                VStack(spacing: 12) {
-                    ForEach(rows, id: \.self) { option in
-                        Button { tap(option) } label: { row(option) }
-                            .buttonStyle(.plain)
-                            .disabled(carried.contains(option))
-                    }
-                    // Room under the last row for the arrows to float over, so nothing
-                    // is stuck behind them at the end of a long list.
-                    Color.clear.frame(height: 96)
-                }
+        // The list is the whole screen, from the top of the glass to the bottom of it,
+        // and the question sits over it rather than above it — so the rows run behind
+        // the question and out under the arrows instead of stopping at a hard edge.
+        ZStack(alignment: .top) {
+            if let measure = question.measure {
+                MeasurePicker(measure: measure, value: $measureValue, imperial: $imperial)
+                    .padding(.horizontal, 24)
+                    .padding(.top, chromeHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                optionList
             }
-            .scrollIndicators(.hidden)
-            // The list runs off the bottom of the screen rather than stopping at an
-            // edge: what is under the arrows fades out instead of being cut.
-            .mask(
-                LinearGradient(stops: [.init(color: .black, location: 0),
-                                       .init(color: .black, location: 0.78),
-                                       .init(color: .clear, location: 1)],
-                               startPoint: .top, endPoint: .bottom)
-            )
+
+            chrome
         }
         .font(.body)
         .foregroundStyle(.white)
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black)
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { safeBottom = $0 }
         // Over the list, at the two edges: back where a thumb reaches to undo, forward
-        // where it reaches to go on.
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 10) {
-                HStack {
-                    arrow("chevron.left", enabled: index > 0, action: back)
-                    Spacer()
-                    arrow("chevron.right", enabled: canAdvance) { advance() }
-                }
-                // Why any of this is being asked, said once at the foot of every screen
-                // rather than on a screen of its own.
-                Text("Answers used for proper goal-setting")
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 8)
-        }
+        // where it reaches to go on — on a bar of their own that runs to the bottom of
+        // the glass, home indicator and all.
+        .overlay(alignment: .bottom) { arrowBar }
         // A new question is a new screen, not the same one re-lettered.
         .animation(.easeInOut(duration: 0.2), value: index)
         .animation(.easeInOut(duration: 0.15), value: chosen)
@@ -175,6 +196,139 @@ struct QuizView: View {
             unpicked.prepare()
         }
         .onChange(of: index) { loadAnswer() }
+    }
+
+    /// The progress bar and the question, floated over the list with nothing solid
+    /// behind them: what passes under is dimmed into the top of the screen rather than
+    /// hidden by a panel.
+    private var chrome: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            progress
+            header
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        // Taller than the question itself, so the fade happens in the gap under the
+        // words rather than across them.
+        .background(alignment: .top) {
+            topScrim
+                .frame(height: chromeHeight + Self.fadeRun)
+                .ignoresSafeArea(edges: .top)
+        }
+        // Both numbers are wanted: the height for the screens that lay out under the
+        // question, and the bottom edge in screen terms for the list, which starts at
+        // the top of the glass rather than at the top of the safe area.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+            chromeHeight = $0.height
+            chromeBottom = $0.maxY
+        }
+    }
+
+    /// The dark the list runs into at either end of the screen. Not a fade to black but
+    /// a pane over it: blurred and near-black at the edge, easing off to nothing by the
+    /// time the rows are being read, so a row on its way out goes soft and dim rather
+    /// than being cut off — and the question and the arrows always have something solid
+    /// enough behind them to be read against.
+    /// The dark the list runs into under the question: black across the words, then
+    /// given up over the gap below them, so a row on its way up goes out before it
+    /// reaches the writing. Black and nothing else — a frosted pane over a black screen
+    /// only ever reads as grey.
+    private var topScrim: some View {
+        let solid = chromeHeight / (chromeHeight + Self.fadeRun)
+        return LinearGradient(stops: [.init(color: .black, location: 0),
+                                      .init(color: .black, location: solid),
+                                      .init(color: .clear, location: 1)],
+                              startPoint: .top, endPoint: .bottom)
+            .allowsHitTesting(false)
+    }
+
+    /// The question, and under it whatever it needs saying about it. The block is the
+    /// same height on every screen whether one line or three land in it: a long question
+    /// wraps into the space instead of being cut off with an ellipsis, and a short one
+    /// leaves it empty rather than pulling the answers up the screen.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(question.title)
+                .font(.title.weight(.semibold))
+                .lineLimit(2)
+            if let note = question.note {
+                Text(note)
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, minHeight: headerBlock, maxHeight: headerBlock,
+               alignment: .topLeading)
+        .padding(.top, 44)
+        .padding(.bottom, 24)
+    }
+
+    /// The rows themselves, on a screen that answers with a tap rather than a number.
+    /// The list owns the whole screen — it starts at the top of the glass and ends at
+    /// the bottom of it, with the question's height and the arrows' room held open as
+    /// padding, so scrolling carries rows up behind the question and down under the
+    /// arrows rather than into a cut edge.
+    private var optionList: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                ForEach(rows, id: \.self) { option in
+                    Button { tap(option) } label: { row(option) }
+                        .buttonStyle(.plain)
+                        .disabled(carried.contains(option))
+                }
+            }
+            .padding(.horizontal, 24)
+            // A short list sits in the middle of what the question and the arrows leave
+            // it — which also puts it under the thumb. A list too long for that scrolls
+            // from the top as usual.
+            .frame(maxWidth: .infinity,
+                   minHeight: max(0, listHeight - chromeBottom - Self.arrowRoom),
+                   alignment: .center)
+            .padding(.top, chromeBottom)
+            .padding(.bottom, Self.arrowRoom)
+        }
+        .scrollIndicators(.hidden)
+        // Only a list that doesn't fit scrolls. Everywhere else the rows are simply
+        // where they are — no bounce, nothing to slide out from under the question.
+        .scrollDisabled(!scrolls)
+        // The list keeps the safe area rather than being inset out of it: the rows are
+        // meant to run under the clock and the home indicator and be dimmed there.
+        .ignoresSafeArea(.container, edges: .vertical)
+        // Measured off the list itself rather than worked out from the screen, so the
+        // middle of the list is the middle of what the list can actually see.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
+        // The band the arrows sit on, drawn by the list because the list is the thing
+        // that reaches the bottom of the glass: clear where the rows are read, four
+        // fifths black from the top of the buttons down through the home indicator.
+        .overlay(alignment: .bottom) {
+            LinearGradient(stops: [.init(color: .clear, location: 0),
+                                   .init(color: Self.veil, location: 0.55),
+                                   .init(color: Self.veil, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: safeBottom * 2 + 140)
+                // Hung below the list's own edge by the height of the home indicator's
+                // strip, which is the one bit of screen the list draws in but doesn't
+                // count as its own.
+                .padding(.bottom, -safeBottom)
+                .allowsHitTesting(false)
+        }
+
+    }
+
+    /// The arrows on their band of black: clear where the list is read, four fifths
+    /// black from the top of the buttons down, so the rows behind them are still there
+    /// to be seen but well behind.
+    private var arrowBar: some View {
+        ZStack(alignment: .bottom) {
+            HStack {
+                arrow("chevron.left", enabled: index > 0, action: back)
+                Spacer()
+                arrow("chevron.right", enabled: canAdvance) { advance() }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, safeBottom + 8)
+        }
+        .ignoresSafeArea()
     }
 
     /// The two ways through the quiz, as glass over the list rather than a slab under
@@ -256,9 +410,12 @@ struct QuizView: View {
     /// What this screen would be recorded as: the ticked rows in the order the list
     /// puts them, with "something else" standing for whatever was typed into it.
     private var answerText: String {
+        // A ruler is never empty and never multiple: whatever is under the mark, in
+        // metric, however the screen was reading it.
+        if let measure = question.measure { return measure.answer(metric: measureValue) }
         // Never what the screen before claimed: a weakness cannot come back as a
         // strength, however the two screens were walked through.
-        rows.filter { chosen.contains($0) && !carried.contains($0) }
+        return rows.filter { chosen.contains($0) && !carried.contains($0) }
             .map { $0 == Self.otherOption ? other.trimmingCharacters(in: .whitespaces) : $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
@@ -268,6 +425,10 @@ struct QuizView: View {
     /// was typed into "something else", and goes back there.
     private func loadAnswer() {
         let saved = onboarding.answers[question.id] ?? ""
+        if let measure = question.measure {
+            measureValue = saved.isEmpty ? measure.start : measure.value(from: saved)
+            return
+        }
         var picks: Set<String> = []
         var typed = ""
         for part in saved.components(separatedBy: ",").map({ $0.trimmingCharacters(in: .whitespaces) })

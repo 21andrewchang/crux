@@ -41,9 +41,11 @@ final class ClimbSession {
 
     /// The check-in's answers, one index into `CheckIn.fields[n].options` per
     /// question, `CheckIn.unanswered` for one not answered yet. Empty on a session
-    /// from before the card existed, which reads as all six unanswered.
+    /// from before the card existed, which reads as all four unanswered.
     ///
-    /// Positional, so `CheckIn.fields` can be appended to but never reordered.
+    /// Positional. Appending a question is safe on its own; anything else needs a
+    /// remap in `CheckIn.migrating`, which is what carries the sessions answered
+    /// while this asked six.
     var checkInAnswers: [Int] = []
 
     @Relationship(deleteRule: .cascade, inverse: \Attempt.session)
@@ -205,15 +207,15 @@ extension ClimbSession {
     /// session saved before a question was added answers it blank rather than
     /// dropping every answer after it out of alignment.
     var checkIn: [Int] {
-        get {
-            var answers = checkInAnswers.prefix(CheckIn.fields.count).map { $0 }
-            while answers.count < CheckIn.fields.count { answers.append(CheckIn.unanswered) }
-            return answers
-        }
+        // Read through the migration rather than truncated to length: a session
+        // answered while the check-in still asked six questions stored them in an
+        // order that no longer matches, and cutting it to the first four would put
+        // the old finger answer under Soreness.
+        get { CheckIn.migrating(checkInAnswers) }
         set { checkInAnswers = newValue }
     }
 
-    /// Today's readiness, 0-100 — nothing until all six are in.
+    /// Today's readiness, 0-100 — nothing until all four are in.
     var readiness: Int? { CheckIn.readiness(checkIn) }
 
     /// Records one answer. The card never shuts — it is the whole of its page.

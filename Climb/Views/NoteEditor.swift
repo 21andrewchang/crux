@@ -33,6 +33,12 @@ final class NoteEditorController {
         coordinator?.insertClimbHeader()
     }
 
+    /// Reads the check-in card off the session again — what a check-in answered over
+    /// the top of the note needs, the card being UIKit and the answers SwiftData.
+    func refreshCheckIn() {
+        coordinator?.refreshCheckIn()
+    }
+
     /// Drops an empty section heading at the cursor, ready to be typed into.
     func insertSectionHeader() {
         coordinator?.insertSectionHeader()
@@ -124,18 +130,25 @@ struct NoteEditor: UIViewRepresentable {
     var onConfirmDelete: (Int) -> Void
     var onChange: () -> Void
     var onFocusChange: (Bool) -> Void
+    /// The check-in card was tapped: the session puts the questions back on screen.
+    var onOpenCheckIn: () -> Void = {}
     /// How far the page has been scrolled from its top, on every frame of it. The
     /// header above the tabs compacts off this.
     var onScroll: (CGFloat) -> Void = { _ in }
-    /// What the pinned header covers. The page runs full height underneath it and
-    /// holds this much room open at its top so nothing rests behind the chrome.
+    /// The line the head of the note ends on, in screen coordinates. The page runs
+    /// full height underneath it and starts its text there, so the text and the header
+    /// are laid out off one measurement rather than two that can disagree.
     var topInset: CGFloat = 0
 
     func makeUIView(context: Context) -> UITextView {
         let textView = NoteTextView()
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
-        textView.alwaysBounceVertical = true
+        textView.isScrollEnabled = tab.scrolls
+        textView.alwaysBounceVertical = tab.scrolls
+        textView.isEditable = tab.editable
+        textView.isSelectable = tab.selectsText
+        textView.centersContent = tab.centersContent
         // `.interactive` would drag the keyboard only: the accessory bar rides
         // above your finger, so it beaches at the bottom edge and then pops out
         // of existence when the text view resigns. `.interactiveWithAccessory`
@@ -817,7 +830,32 @@ struct NoteEditor: UIViewRepresentable {
             if let card = NoteDocument.checkInRange(in: storage) {
                 text = (storage.string as NSString).replacingCharacters(in: card, with: "")
             }
-            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+
+            // A heading pressed but not named yet holds nothing but its break or the
+            // filler space, so the text alone still reads as a blank page — while the
+            // line itself is drawing its own example, with the page's line straight
+            // under it. The heading is something on the page.
+            let full = NSRange(location: 0, length: storage.length)
+            var written = false
+            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] {
+                storage.enumerateAttribute(key, in: full) { value, _, stop in
+                    if value != nil {
+                        written = true
+                        stop.pointee = true
+                    }
+                }
+                if written { return false }
+            }
+            // Same for any block that is not the check-in card — an attempt row lands
+            // as one character, and that character is whitespace to a trim.
+            storage.enumerateAttribute(.attachment, in: full) { value, _, stop in
+                if value != nil, !(value is CheckInAttachment) {
+                    written = true
+                    stop.pointee = true
+                }
+            }
+            return !written
         }
 
         /// Only attempts live behind markers now; anything else is dropped (or, for an
@@ -836,25 +874,14 @@ struct NoteEditor: UIViewRepresentable {
             guard parent.session.id != Tutorial.id else { return nil }
             let card = CheckInAttachment()
             card.answers = { [weak self] in self?.parent.session.checkIn ?? [] }
-            card.onAnswer = { [weak self] field, option in
-                self?.recordCheckIn(field: field, option: option)
-            }
+            card.onOpen = { [weak self] in self?.parent.onOpenCheckIn() }
             card.onResize = { [weak self] in self?.relayoutCheckIn() }
             return card
         }
 
-        /// One answer, straight onto the session. The card is a view onto the model
-        /// and never a copy of it, so nothing here touches the document's text —
-        /// which is also why answering a question leaves the undo stack alone.
-        private func recordCheckIn(field: Int, option: Int) {
-            parent.session.answerCheckIn(field: field, option: option)
-            parent.session.updatedAt = Date()
-            refreshCheckIn()
-            parent.onChange()
-        }
-
-        /// Redraws the card where it stands, and re-measures it.
-        private func refreshCheckIn() {
+        /// Redraws the card where it stands, and re-measures it — what the check-in
+        /// coming back answered needs.
+        func refreshCheckIn() {
             guard let card = checkInAttachment() else { return }
             card.cardView?.configure(answers: parent.session.checkIn)
             card.invalidateHeight()
@@ -888,10 +915,14 @@ struct NoteEditor: UIViewRepresentable {
                 textView.textStorage.endEditing()
                 isRestyling = false
             }
-            // The note must not jump under the finger that just tapped a pill.
+            // The note must not jump under the finger that just answered a question.
             if let note = textView as? NoteTextView {
                 note.holdingScrollPosition(restyle)
                 note.resolveFullLayout()
+                // The card just changed height, so a centred page has to be re-centred
+                // around the new one — hopped off this turn, since the height it is
+                // measured against is the one the layout above has yet to report.
+                DispatchQueue.main.async { note.applyCenteringInset() }
             } else {
                 restyle()
             }
@@ -899,6 +930,10 @@ struct NoteEditor: UIViewRepresentable {
 
         private func makeAttemptAttachment(for id: UUID) -> AttemptAttachment {
             let attachment = AttemptAttachment(attemptID: id)
+            // Every row comes up closed — the one it lands as, and every one rebuilt
+            // when the note is opened again. A session reads as its list of attempts,
+            // and the clips under any of them are one tap on the name away.
+            attachment.areNotesFolded = true
             attachment.snapshotProvider = { [weak self] id in self?.snapshot(for: id) }
             attachment.onTap = { [weak self] id in self?.parent.onOpenAttempt(id) }
             attachment.onToggleFold = { [weak self] id in self?.toggleNotesFold(for: id) }
@@ -979,7 +1014,7 @@ struct NoteEditor: UIViewRepresentable {
         }
 
         /// The row lands with its notes already under it — whatever was written during
-        /// capture — and the caret at the end of them, ready to add more.
+        /// capture — closed, like every other row, with the caret on the row itself.
         func insertAttempt(id: UUID) {
             let notes = parent.session.attempt(with: id)?.notes ?? ""
             insert(makeAttemptAttachment(for: id),
@@ -1281,7 +1316,12 @@ struct NoteEditor: UIViewRepresentable {
             if let quote, quote.length > 0 {
                 piece.append(breakPiece)
                 piece.append(quote)
-                caret = location + piece.length
+                // Only follow the notes down if they are open to be typed into: a row
+                // that lands closed draws them at a hairline, and a caret parked in
+                // there is a sliver against the row with nothing to edit.
+                if (attachment as? AttemptAttachment)?.areNotesFolded != true {
+                    caret = location + piece.length
+                }
             }
             // A break after it only if the note carries on: at the end of the note the
             // row ends the document, and the line under it is one that was never added.
@@ -2094,12 +2134,10 @@ struct NoteEditor: UIViewRepresentable {
 
         // MARK: Folding
 
-        /// The heading line a tap at `point` folds. On a climb heading that is the
-        /// whole row past its pill — the attempt count, the chevron, and the empty
-        /// space between them — so only the bubble itself is left as something to
-        /// tap into and rename. A section heading has no pill to protect, so it keeps
-        /// the narrower target: the trailing lane its chevron sits in, with slop to
-        /// make a 12pt glyph finger-sized.
+        /// The heading line a tap at `point` folds. On either kind that is everything
+        /// past the name — the chevron beside it, whatever else the line carries out
+        /// at its trailing edge, and the space between — so only the name itself is
+        /// left as something to tap into and rename.
         fileprivate func headingChevron(at point: CGPoint) -> NSRange? {
             guard let textView, let position = textView.closestPosition(to: point) else { return nil }
             let caret = textView.caretRect(for: position)
@@ -2112,8 +2150,20 @@ struct NoteEditor: UIViewRepresentable {
             if let climb = headingLine(onLineAt: offset) {
                 return point.x > pillMaxX(ofHeadingLine: climb) ? climb : nil
             }
-            guard point.x > textView.bounds.width - 56 else { return nil }
-            return sectionLine(onLineAt: offset)
+            guard let section = sectionLine(onLineAt: offset) else { return nil }
+            return point.x > nameMaxX(ofSectionLine: section) ? section : nil
+        }
+
+        /// The right edge of a section heading's name, in the text view's coordinates —
+        /// measured the way `SectionHeaderLayoutFragment` lays it out, example name and
+        /// all, so an unnamed section is as tappable as a named one.
+        private func nameMaxX(ofSectionLine line: NSRange) -> CGFloat {
+            guard let textView else { return .greatestFiniteMagnitude }
+            let name = NoteDocument.headingName((textView.textStorage.string as NSString)
+                .substring(with: line))
+            let text = name.isEmpty ? NoteDocument.sectionExample : name
+            return textView.textContainerInset.left + NoteDocument.textIndent
+                + HeadingPlaceholder.width(of: text, font: NoteDocument.sectionFont)
         }
 
         /// The right edge of a climb heading's name, in the text view's coordinates —
@@ -2493,18 +2543,16 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
             return fragment
         }
 
-        // A section heading lays out as its own subheader text; only the chevron
-        // is drawn in.
+        // A section heading lays out as its own subheader text; the chevron beside its
+        // name, and the example it wears while unnamed, are drawn in.
         if storage.attribute(NoteDocument.sectionHeader, at: start, effectiveRange: nil) != nil {
             let line = (storage.string as NSString).lineRange(for: NSRange(location: start, length: 0))
-            let name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             let fragment = SectionHeaderLayoutFragment(textElement: textElement,
                                                        range: textElement.elementRange)
-            fragment.name = name
+            fragment.name = NoteDocument.headingName((storage.string as NSString).substring(with: line))
             fragment.isFolded = NoteDocument.isFolded(lineAt: start, in: storage)
             fragment.foldProgress = foldAnimator.progress(forLineAt: start, folded: fragment.isFolded)
             fragment.containerWidth = textView.textContainer.size.width
-            fragment.climbCount = climbCount(below: NSMaxRange(line), in: storage)
             return fragment
         }
 
@@ -2591,41 +2639,6 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
         }
         return count
     }
-
-    /// Climbs filed under the section whose line ends at `start`: every climb heading
-    /// from there down to the next section — the boundary the section's own fold
-    /// stops at, so the tally counts exactly what folds away under it. Counted by
-    /// line rather than by attribute run, because two headings on consecutive lines
-    /// carry one unbroken run between them.
-    private func climbCount(below start: Int, in storage: NSTextStorage) -> Int {
-        var end = storage.length
-        guard start < end else { return 0 }
-        let below = NSRange(location: start, length: storage.length - start)
-        storage.enumerateAttribute(NoteDocument.sectionHeader, in: below) { value, range, stop in
-            if value != nil {
-                end = min(end, range.location)
-                stop.pointee = true
-            }
-        }
-        guard start < end else { return 0 }
-        let text = storage.string as NSString
-        var count = 0
-        var last: NSRange?
-        storage.enumerateAttribute(NoteDocument.climbHeader,
-                                   in: NSRange(location: start, length: end - start)) { value, range, _ in
-            guard value != nil else { return }
-            var location = text.lineRange(for: NSRange(location: range.location, length: 0)).location
-            while location < NSMaxRange(range) {
-                let line = text.lineRange(for: NSRange(location: location, length: 0))
-                if last != line {
-                    count += 1
-                    last = line
-                }
-                location = NSMaxRange(line)
-            }
-        }
-        return count
-    }
 }
 
 extension NoteEditor.Coordinator: UIGestureRecognizerDelegate {
@@ -2690,6 +2703,7 @@ final class NoteTextView: UITextView {
     var headerInset: CGFloat = 0 {
         didSet {
             guard headerInset != oldValue else { return }
+            probe("headerInsetSet")
             applyTopInset()
         }
     }
@@ -2699,19 +2713,47 @@ final class NoteTextView: UITextView {
     /// here because automatic adjustment is off (it would fight the keyboard inset).
     override func safeAreaInsetsDidChange() {
         super.safeAreaInsetsDidChange()
+        probe("safeAreaChanged")
         applyTopInset()
     }
 
-    /// Everything covering the top of the page — the bars through the safe area, and
-    /// the header on top of that. A page sitting at its top is kept there, so the
-    /// header opening or shutting slides the text rather than leaving it behind.
+    /// TEMPORARY probe: what this view thinks its top is, against what the header
+    /// thinks. Removed once the header/text drift is pinned down.
+    func probe(_ tag: String) {
+        guard ProcessInfo.processInfo.arguments.contains("-headerProbe") else { return }
+        let origin = convert(CGPoint.zero, to: nil).y
+        print("PROBE[\(tag)] safeTop=\(safeAreaInsets.top) headerInset=\(headerInset) "
+              + "insetTop=\(contentInset.top) offsetY=\(contentOffset.y) "
+              + "originInWindow=\(origin) textTopOnScreen=\(origin + contentInset.top + contentOffset.y * -1 - contentInset.top)")
+    }
+
+    /// Where the text starts: the line the head of the note ends on, handed down from
+    /// the header itself rather than added up here out of this view's own safe area.
+    /// That sum was the bug — the keyboard arriving changed what this view thought the
+    /// safe area was, which moved the text out from under a header that had not moved,
+    /// and the note slid up behind the pills. One measurement, one place, no drift.
+    ///
+    /// A page sitting at its top is kept there, so the header growing a line taller
+    /// slides the text rather than leaving it behind.
     private func applyTopInset() {
         let wasAtTop = contentOffset.y <= -contentInset.top + 1
-        contentInset.top = safeAreaInsets.top + headerInset
+        contentInset.top = max(0, headerInset - topOfPageOnScreen)
         verticalScrollIndicatorInsets.top = contentInset.top
         if wasAtTop { contentOffset.y = -contentInset.top }
         updateBottomInset()
     }
+
+    /// Where this page starts on the screen. The header hands down a line measured on
+    /// the screen, and the room held open at the top of the page is that line less
+    /// wherever the page itself begins — usually the very top, but a page laid out
+    /// inside the bars still starts its text on the same line as the header ends on.
+    private var topOfPageOnScreen: CGFloat {
+        guard window != nil, let superview else { return 0 }
+        return superview.convert(frame.origin, to: nil).y
+    }
+
+    /// The page's own position, last time the inset was worked out from it.
+    private var lastTopOfPage: CGFloat = 0
 
     /// How much of the view the keyboard currently covers, accessory bar included.
     private var keyboardOverlap: CGFloat = 0
@@ -2739,9 +2781,49 @@ final class NoteTextView: UITextView {
     /// instead of stacking on top of it: a fixed container inset stranded the last
     /// line a bar's height above the keyboard with nothing left to scroll to.
     private func updateBottomInset() {
+        guard !centersContent else { return }
         contentInset.bottom = obscuredBottom + visibleHeight / 2
         // The indicator measures the real content, not the dead room below it.
         verticalScrollIndicatorInsets.bottom = obscuredBottom
+    }
+
+    /// Whether this page's content is centred in the screen rather than starting at
+    /// the top of it — set once from `NoteTab.centersContent`.
+    var centersContent = false
+
+    /// The room left above the content when it is being centred, before this had a
+    /// height to centre inside — also the floor, so a page whose content is taller
+    /// than the screen starts at the top rather than being pushed off it.
+    private static let restingTopInset: CGFloat = 12
+
+    /// Puts the content in the middle of the readable strip.
+    ///
+    /// Done with `textContainerInset` rather than `contentInset`, which is the header's
+    /// and the keyboard's: it is the text that is being moved down the page, not the
+    /// page that is being scrolled. The two would otherwise fight, and the header's
+    /// measurement is the one that must not be touched.
+    ///
+    /// The body's own height is invariant under this — changing the container's top
+    /// inset moves `contentSize.height` by exactly the same amount — so this settles
+    /// in one pass rather than chasing itself.
+    func applyCenteringInset() {
+        guard centersContent, bounds.height > 0 else { return }
+        // Measured off the laid-out text rather than `contentSize`. A text view with
+        // scrolling turned off — which this page is — stops keeping `contentSize` as
+        // a description of its content and starts reporting something close to its own
+        // bounds, so the height computed from it came out as the whole screen and the
+        // centring was always already centred, i.e. never moved anything.
+        guard let layout = textLayoutManager else { return }
+        layout.ensureLayout(for: layout.documentRange)
+        let body = layout.usageBoundsForTextContainer.height
+        guard body > 0 else { return }
+        let strip = max(0, bounds.height - contentInset.top - obscuredBottom)
+        let top = max(Self.restingTopInset, (strip - body) / 2)
+        // A threshold, not equality: the height is measured off laid-out text and
+        // lands a fraction out from one pass to the next, and writing the inset back
+        // provokes the layout that would measure it again.
+        guard abs(textContainerInset.top - top) > 0.5 else { return }
+        textContainerInset.top = top
     }
 
     /// The insets are sized off `bounds.height`, so a resize has to resettle them.
@@ -2872,6 +2954,12 @@ final class NoteTextView: UITextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // The page moving on the screen moves where its text has to start, and nothing
+        // announces that — a resize does not always come with it.
+        if topOfPageOnScreen != lastTopOfPage {
+            lastTopOfPage = topOfPageOnScreen
+            applyTopInset()
+        }
         var resized = false
         if bounds.width != lastLaidOutWidth {
             lastLaidOutWidth = bounds.width
@@ -2887,6 +2975,8 @@ final class NoteTextView: UITextView {
         // whoever placed something against this view's text measured it at the old
         // size — the first one being zero, before the view had ever been on screen.
         if resized { onResize?() }
+        // After the insets above have settled, since it is measured against them.
+        applyCenteringInset()
         guard let held = heldOffset, !isDragging, !isDecelerating else { return }
         let pinned = clamped(held)
         if super.contentOffset != pinned { super.contentOffset = pinned }
@@ -2896,8 +2986,10 @@ final class NoteTextView: UITextView {
         guard window != nil,
               let endFrame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
         else { return }
+        probe("keyboardWillChange")
         keyboardOverlap = max(0, bounds.maxY - convert(endFrame, from: nil).minY)
         updateBottomInset()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.probe("afterKeyboard") }
         guard keyboardOverlap > 0, isFirstResponder else { return }
         // After the inset lands, bring the caret back into the visible strip — this
         // is what moves the note up when a tap below the keyboard's edge focuses it.
@@ -2917,11 +3009,14 @@ final class NoteTextView: UITextView {
         guard !isAutoscrolling, let position = selectedTextRange?.end else { return }
         let caret = caretRect(for: position)
         guard caret.origin.y.isFinite, caret.height > 0 else { return }
-        let visibleTop = contentOffset.y + safeAreaInsets.top
+        // The strip starts under the head of the note, not under the status bar: a
+        // caret behind the pills is a caret the user cannot see, so it counts as
+        // hidden and gets scrolled out — and lands in the middle of the same strip.
+        let visibleTop = contentOffset.y + contentInset.top
         let visibleBottom = contentOffset.y + bounds.height - obscuredBottom
         guard caret.minY >= visibleBottom || caret.maxY <= visibleTop else { return }
 
-        let target = caret.midY - safeAreaInsets.top - visibleHeight / 2
+        let target = caret.midY - contentInset.top - visibleHeight / 2
         let lowest = -contentInset.top
         let highest = max(lowest, contentSize.height + contentInset.bottom - bounds.height)
 

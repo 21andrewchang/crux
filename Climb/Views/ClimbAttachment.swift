@@ -27,8 +27,11 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
     /// on the note's own left edge — flush with the "A" of an attempt row's name — and
     /// the heading's words start a clear step past it, the same way a bookmark sits
     /// before the words of a clip.
-    static let dotSide: CGFloat = 14
-    static let dotGutter: CGFloat = dotSide + 9
+    static let dotSide: CGFloat = 10
+    /// A hair in off the page's margin — enough that the dot doesn't read as pinned to
+    /// the edge of the card under it, not so much that the heading looks indented.
+    static let dotLead: CGFloat = 2.5
+    static let dotGutter: CGFloat = dotLead + dotSide + 6
 
     private var countText: NSString {
         (attemptCount == 1 ? "1 attempt" : "\(attemptCount) attempts") as NSString
@@ -47,7 +50,7 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
         guard let line = textLineFragments.first else { return .null }
         let font = NoteDocument.headerFont
         let baseline = line.typographicBounds.minY + line.glyphOrigin.y
-        return CGRect(x: NoteDocument.textIndent - layoutFragmentFrame.minX,
+        return CGRect(x: NoteDocument.textIndent + Self.dotLead - layoutFragmentFrame.minX,
                       y: baseline - font.capHeight / 2 - Self.dotSide / 2,
                       width: Self.dotSide,
                       height: Self.dotSide)
@@ -67,9 +70,9 @@ final class ClimbHeaderLayoutFragment: NSTextLayoutFragment {
         let rect = dotRect
         UIGraphicsPushContext(context)
         if !rect.isNull {
-            // The colour at full strength: it is one small mark now, and a wash of it
-            // this size would read as grey.
-            tint.setFill()
+            // The name's own strength, not full: the dot is the first mark of the
+            // heading, and a brighter one detached itself from the words after it.
+            tint.withAlphaComponent(NoteDocument.headerTintAlpha).setFill()
             UIBezierPath(ovalIn: rect.offsetBy(dx: point.x, dy: point.y)).fill()
         }
         let icon = HeadingChevron.icon()

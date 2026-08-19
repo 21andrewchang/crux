@@ -1,7 +1,9 @@
 import UIKit
 
-/// The fold chevron every heading line — section or climb — wears at its trailing
-/// edge: down while the group under it is open, right once it is folded away.
+/// The fold chevron a heading wears: down while the group under it is open, right
+/// once it is folded away. A climb keeps its own out at the trailing edge, in the
+/// column its attempt count runs down; a section carries a bigger one right beside
+/// its name, where the eye already is.
 /// Drawn by the heading's own layout fragment, so whatever moves the text carries
 /// the chevron with it.
 enum HeadingChevron {
@@ -12,8 +14,8 @@ enum HeadingChevron {
     /// Drawn a step fainter than the counts beside it: with a chevron on every
     /// heading and every row, a column of them at label strength reads as clutter
     /// down the right edge. Faint enough to fall back, still there when looked for.
-    static func icon() -> UIImage {
-        let config = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+    static func icon(pointSize: CGFloat = 12) -> UIImage {
+        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         return UIImage(systemName: "chevron.down", withConfiguration: config)!
             .withTintColor(.tertiaryLabel, renderingMode: .alwaysOriginal)
     }
@@ -58,10 +60,49 @@ enum HeadingChevron {
     }
 }
 
-/// The tally a heading — section or climb — carries at its trailing edge: attempts
-/// filed under a climb, climbs filed under a section. One set of attributes and one
-/// placement for both, so the two lines read as a single column down the note's right
-/// edge rather than two decorations that merely resemble each other.
+/// The section heading's own chevron: the same glyph, the same grey, sized to stand
+/// with a 21pt bold name instead of beside 13pt of counts, and set a step past the end
+/// of that name rather than out at the margin — a section has nothing else on its
+/// line, and a mark alone at the far edge reads as unattached to the words it belongs
+/// to.
+enum SectionChevron {
+    static let pointSize: CGFloat = 17
+
+    /// The step between the end of the name and the chevron's box: close enough to
+    /// belong to the name, clear enough not to touch its last letter.
+    static let gap: CGFloat = 8
+
+    static func icon() -> UIImage { HeadingChevron.icon(pointSize: pointSize) }
+
+    static let side: CGFloat = {
+        let icon = SectionChevron.icon()
+        return max(icon.size.width, icon.size.height)
+    }()
+
+    /// A step past the name — measured off the text rather than off the line box, so
+    /// it follows the name as it is typed and stands beside the faint example while
+    /// the heading is still unnamed. Centred on the name's capitals rather than on its
+    /// line box, so it sits with the words instead of floating under them.
+    ///
+    /// Clamped inside the text's own right edge: a name long enough to wrap would
+    /// otherwise carry the chevron off the page, since the heading is measured against
+    /// its first line's text however many lines it takes.
+    static func rect(after name: String, font: UIFont, containerWidth: CGFloat,
+                     in fragment: NSTextLayoutFragment) -> CGRect {
+        guard let line = fragment.textLineFragments.first else { return .null }
+        let baseline = line.typographicBounds.minY + line.glyphOrigin.y
+        let x = line.typographicBounds.minX + line.glyphOrigin.x
+            + HeadingPlaceholder.width(of: name, font: font) + gap
+        let limit = containerWidth - NoteDocument.textIndent - side
+            - fragment.layoutFragmentFrame.minX
+        return CGRect(x: min(x, limit),
+                      y: baseline - font.capHeight / 2 - side / 2,
+                      width: side, height: side)
+    }
+}
+
+/// The tally a climb heading carries at its trailing edge: the attempts filed under
+/// it, right-aligned against its chevron.
 enum HeadingCount {
     static let attributes: [NSAttributedString.Key: Any] = [
         .font: UIFont.systemFont(ofSize: 13),
@@ -115,13 +156,10 @@ enum HeadingPlaceholder {
 }
 
 /// Lays out a section heading's line exactly as standard — the subheader text is the
-/// section — and draws the fold chevron beside it.
+/// section — and draws the fold chevron beside its name. No count: what a section
+/// heads is climbs, and they carry counts of their own.
 final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
     var isFolded = false
-    /// Climbs filed under this heading in the note — drawn at the line's trailing
-    /// edge exactly as an attempt count is on a climb, "0 climbs" included, so a
-    /// fresh section reads as one too.
-    var climbCount = 0
     /// How far through its quarter turn the chevron is — 0 open, 1 folded. Set from
     /// `FoldAnimator` when the fragment is vended, so a fold spins rather than snaps.
     var foldProgress: CGFloat = 0
@@ -131,30 +169,31 @@ final class SectionHeaderLayoutFragment: NSTextLayoutFragment {
 
     private var example: String { name.isEmpty ? NoteDocument.sectionExample : "" }
 
-    private var countText: NSString {
-        (climbCount == 1 ? "1 climb" : "\(climbCount) climbs") as NSString
-    }
-
     private var placeholderRect: CGRect {
         HeadingPlaceholder.rect(example, font: NoteDocument.sectionFont, in: self)
     }
 
+    /// Beside whichever of the two is on the line: the typed name, or the example
+    /// standing in for it.
+    private var chevronRect: CGRect {
+        SectionChevron.rect(after: name.isEmpty ? example : name,
+                            font: NoteDocument.sectionFont,
+                            containerWidth: containerWidth, in: self)
+    }
+
     override var renderingSurfaceBounds: CGRect {
-        let icon = HeadingChevron.icon()
-        let chevron = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
-        return super.renderingSurfaceBounds
-            .union(chevron)
-            .union(HeadingCount.rect(countText, before: chevron, in: self))
+        super.renderingSurfaceBounds
+            .union(chevronRect)
             .union(placeholderRect)
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
         UIGraphicsPushContext(context)
-        let icon = HeadingChevron.icon()
-        let rect = HeadingChevron.rect(for: icon, containerWidth: containerWidth, in: self)
-        HeadingChevron.draw(icon, in: rect, progress: foldProgress, at: point, in: context)
-        HeadingCount.draw(countText, in: HeadingCount.rect(countText, before: rect, in: self),
-                          at: point)
+        let rect = chevronRect
+        if !rect.isNull {
+            HeadingChevron.draw(SectionChevron.icon(), in: rect, progress: foldProgress,
+                                at: point, in: context)
+        }
         HeadingPlaceholder.draw(example, font: NoteDocument.sectionFont,
                                 color: .placeholderText, in: placeholderRect, at: point)
         UIGraphicsPopContext()

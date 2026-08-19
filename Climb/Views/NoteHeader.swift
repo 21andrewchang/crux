@@ -34,18 +34,39 @@ struct NoteHeader: View {
     /// particular name, so during it the field shows that name.
     let placeholder: String
     @FocusState.Binding var isTitleFocused: Bool
-    /// What the header comes to, handed back so every page can hold that much room
-    /// open at its top.
-    let onHeight: (CGFloat) -> Void
+    /// Where the head of the note comes to when it is resting, in screen coordinates,
+    /// so every page can start its text on that exact line. Handed back as a position
+    /// rather than a height because the page has its own idea of where the safe area
+    /// begins — and the keyboard moves it out from under the header.
+    let onBottom: (CGFloat) -> Void
 
     /// How tall the whole head of the note is — how far it travels before it is gone.
     @State private var height: CGFloat = 0
+    /// Where the head of the note sits when nothing has been scrolled.
+    @State private var top: CGFloat = 0
 
     /// The last of the travel, over which the header fades out rather than sliding on
     /// up behind the top bar's own buttons.
     private static let fade: CGFloat = 40
 
     var body: some View {
+        ZStack(alignment: .top) {
+            // The head of the note travels with the page, so it cannot be asked where
+            // it rests — this can. Nothing is drawn: it is a mark at the line the
+            // header starts on, held still while the header itself slides past it.
+            Color.clear
+                .frame(height: 0)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: {
+                    top = $0
+                    reportBottom()
+                }
+            head
+        }
+    }
+
+    /// The name and the pills, moving as the one piece they read as: the same offset
+    /// and the same fade carry both, and the page below starts exactly where they end.
+    private var head: some View {
         VStack(spacing: 0) {
             titleField
                 .padding(.top, 2)
@@ -59,9 +80,13 @@ struct NoteHeader: View {
         // pills — and the text under them — down.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
             height = $0
-            onHeight($0)
+            reportBottom()
         }
     }
+
+    /// The line the pages start their text on: the bottom edge of the head of the note
+    /// where it rests, whatever the page under it is doing.
+    private func reportBottom() { onBottom(top + height) }
 
     /// Whole until the last stretch of the way up, then out — so the pills are still
     /// there for as long as they are usefully on screen, and gone before they reach
@@ -73,8 +98,16 @@ struct NoteHeader: View {
 
     /// The session's name. Wraps rather than scrolling sideways — a workout can be
     /// called whatever it is called, and the header grows to hold it.
+    ///
+    /// Title-cased on the way in, the same as the headings under it: the keyboard's own
+    /// autocapitalization only ever catches what is typed, and a name pasted in or
+    /// written before the rule existed reads as a name too.
+    private var title: Binding<String> {
+        Binding { session.title } set: { session.title = NoteDocument.capitalizedName($0) }
+    }
+
     private var titleField: some View {
-        TextField(text: $session.title, axis: .vertical) {
+        TextField(text: title, axis: .vertical) {
             Text(placeholder)
         }
         .font(.system(size: 34, weight: .bold))

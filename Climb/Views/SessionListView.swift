@@ -7,6 +7,9 @@ struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ClimbSession.createdAt, order: .reverse) private var sessions: [ClimbSession]
     @State private var newSession: ClimbSession?
+    /// The session made but not yet opened: the check-in is over it, and it opens when
+    /// the check-in is done with — answered or backed out of.
+    @State private var checkingIn: ClimbSession?
     @State private var searchText = ""
     @State private var store = Store.shared
     /// Up when the compose button was pressed with no free session left to make.
@@ -71,6 +74,20 @@ struct SessionListView: View {
             .navigationTitle("Sessions")
             .searchable(text: $searchText, prompt: "Search")
             .toolbar {
+                // The way back into onboarding, top-left, for as long as onboarding
+                // is the thing being built: walking the flow should cost a tap, not a
+                // reinstall or a relaunch with an argument. It moves where you are in
+                // the flow and nothing else — no note, no attempt and no video is
+                // touched by it, so it can never cost anything to press.
+                #if DEBUG
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Onboarding.shared.reset()
+                    } label: {
+                        Label("Replay onboarding", systemImage: "sparkles")
+                    }
+                }
+                #endif
                 // Compose lives top-right — the same corner the ellipsis holds
                 // inside a session — leaving the bottom bar to the search field
                 // and the (globally rendered) timer capsule.
@@ -108,6 +125,21 @@ struct SessionListView: View {
             }
             .navigationDestination(item: $newSession) { session in
                 SessionDetailView(session: session, startsEditing: true)
+            }
+            // Over everything, and before the note exists on screen: a session begins
+            // with the check-in or it does not begin. A cover rather than a sheet —
+            // there is nothing behind it worth seeing, and it is not something to put
+            // half down.
+            .fullScreenCover(item: $checkingIn) { session in
+                CheckInFlow(
+                    answers: session.checkIn,
+                    onFinish: { answers in
+                        session.checkIn = answers
+                        session.updatedAt = Date()
+                        try? modelContext.save()
+                        open(session)
+                    },
+                    onSkip: { open(session) })
             }
             // A sheet rather than a cover: this paywall is one you are meant to be able
             // to put down.
@@ -298,7 +330,15 @@ struct SessionListView: View {
         let session = ClimbSession()
         modelContext.insert(session)
         try? modelContext.save()
-        newSession = session
+        checkingIn = session
+    }
+
+    /// Puts the check-in away and opens the note behind it. The two are not swapped in
+    /// one turn: dismissing a cover and pushing a destination in the same frame drops
+    /// the push, so the note is opened once the cover has actually gone.
+    private func open(_ session: ClimbSession) {
+        checkingIn = nil
+        DispatchQueue.main.async { newSession = session }
     }
 
     /// Bought, from the wall they hit on the way to a new session — so they get the
