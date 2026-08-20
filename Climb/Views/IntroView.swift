@@ -12,7 +12,7 @@ struct IntroView: View {
     /// Done with it — skipped or walked through, the same thing either way.
     let onFinish: () -> Void
 
-    @State private var index = 1 // TEMP
+    @State private var index = 0
     /// The page's own width, for deciding which half of it was tapped.
     @State private var pageWidth: CGFloat = 0
 
@@ -385,12 +385,13 @@ private struct ClipSlide: View {
         }
         .animation(.smooth(duration: 0.3), value: showsNote)
         // The note landing is the moment the whole slide is built around, and it is
-        // the one thing on it the phone can say out loud. Everything the generator
-        // has: the intro's other knocks are taps and rumbles, so the hardest one in
-        // it belongs to the only event that is a hit.
+        // the one thing on it the phone can say out loud. Not everything the
+        // generator has, though: the clip loops, so this knock comes round every five
+        // seconds, and the full-force one is spent on the last slide's landing, which
+        // happens once. Held back to three quarters — the same hit, further off.
         .onChange(of: showsNote) { _, isUp in
             guard isUp else { return }
-            UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 0.7)
         }
         .task { await load() }
         .onChange(of: active, initial: true) { _, isOn in
