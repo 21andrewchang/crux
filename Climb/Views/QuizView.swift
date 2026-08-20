@@ -111,7 +111,7 @@ struct QuizView: View {
               measure: .pullUps, note: "Rough estimate. Do not test your limit."),
         // Skipped for anyone who just said none: asking how much weight they add to a
         // pull-up they can't do is the quiz not listening.
-        .init(id: "pullUpMax", title: "How much can you add for one?", options: [],
+        .init(id: "pullUpMax", title: "How much can you add for one rep?", options: [],
               measure: .pullUpMax, note: "Rough estimate. Do not test your limit.",
               asks: { ($0["pullUps"].flatMap { Int($0.prefix { $0.isNumber }) } ?? 0) > 0 }),
         // The one thing that predicts what you climb better than anything else, and the
@@ -415,6 +415,14 @@ struct QuizView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, safeBottom + 8)
+            // The band the arrows sit on takes the tap itself, so a row that has
+            // scrolled behind it can't be picked through the dark: the arrows are in
+            // front of this and still get their own taps.
+            .background {
+                Color.clear
+                    .contentShape(.rect)
+                    .onTapGesture { }
+            }
         }
         .ignoresSafeArea()
     }

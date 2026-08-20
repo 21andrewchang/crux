@@ -607,6 +607,10 @@ private struct LogSlide: View {
     /// How many of the three have landed, and whether the second has opened.
     @State private var landed = 1
     @State private var opened = false
+    /// Whether the screen has arrived. One flag rather than one per piece: the note
+    /// and the bar under it come in together, because they are one screen and a bar
+    /// that turns up a beat late is a bar nobody sees turn up at all.
+    @State private var entered = false
     /// When the rest on the bar runs out. Set when the slide arrives, so the countdown
     /// is running by the time it is looked at.
     @State private var restEnds = Date()
@@ -617,8 +621,19 @@ private struct LogSlide: View {
     /// somewhere to go afterwards, and there is nothing on a slide for it to go to.
     private static let rest: TimeInterval = 120
 
+    /// The beat before the screen lands, so the page has finished turning under it and
+    /// the arrival is watched rather than caught halfway through.
+    private static let arrival: TimeInterval = 0.18
+    /// How the screen comes in: off fast and then a long glide down to nothing, rather
+    /// than a spring. A spring overshoots and comes back, which on a whole screen reads
+    /// as a bounce — this covers most of the distance in the first fifth of the time
+    /// and spends the rest arriving, so it looks like something settling into place.
+    private static let easeIn = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.75)
     private static let landing: TimeInterval = 0.62
     private static let opening: TimeInterval = 0.8
+    /// The gap between the two taps the opening makes. Short enough to be one gesture
+    /// rather than two events, long enough not to blur into a single buzz.
+    private static let unfold: TimeInterval = 0.11
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -633,6 +648,15 @@ private struct LogSlide: View {
         .padding(.horizontal, Self.inset)
         .frame(width: Self.crop.width, height: Self.crop.height, alignment: .topLeading)
         .overlay(alignment: .bottom) { bar.padding(.bottom, Self.barBottom) }
+        // The whole screen arrives at once — heading, climb line, first go and the bar
+        // under them — scaled in from its own middle and lifted the last few points, so
+        // it settles into the page rather than sliding onto it. Scaling about the
+        // centre is what gives the bar its rise for free: it is the bottom edge of a
+        // screen growing to size, which is a good deal more legible than a capsule
+        // sliding up on its own a beat later.
+        .scaleEffect(entered ? 1 : 0.92, anchor: .center)
+        .offset(y: entered ? 0 : 20)
+        .opacity(entered ? 1 : 0)
         .onChange(of: active, initial: true) { _, isOn in
             if isOn { play() } else { rewind() }
         }
@@ -868,18 +892,28 @@ private struct LogSlide: View {
 
     // MARK: - Playing it
 
-    /// One attempt, then the next, then the next, and then the second one opens.
+    /// The screen arrives with its rest already running, and then the session happens
+    /// on top of it: one attempt, the next, and the second one opening.
     ///
     /// The order is the argument: two goes go by before anything is read back, which is
     /// how a session actually runs — you climb, you climb again, and the note is what
     /// you have afterwards. Each landing knocks lightly, the way the app knocks when a
-    /// go is saved; the opening does not, because nothing was logged by it.
+    /// go is saved. The opening gets a different knock rather than the same one again:
+    /// two soft taps close together, because nothing was logged by it — it is a card
+    /// being unfolded, and a saving knock would say a fourth go had happened.
+    ///
+    /// The clock is started with the arrival rather than with the slide, so its first
+    /// shown frame is a full rest rather than whatever a hidden countdown had spent.
     private func play() {
         rewind()
-        restEnds = Date().addingTimeInterval(Self.rest)
         runner = Task { @MainActor in
             let knock = UIImpactFeedbackGenerator(style: .light)
             knock.prepare()
+
+            try? await Task.sleep(for: .seconds(Self.arrival))
+            guard !Task.isCancelled else { return }
+            restEnds = Date().addingTimeInterval(Self.rest)
+            withAnimation(Self.easeIn) { entered = true }
 
             for step in 2...3 {
                 try? await Task.sleep(for: .seconds(Self.landing))
@@ -892,11 +926,23 @@ private struct LogSlide: View {
             try? await Task.sleep(for: .seconds(Self.opening))
             guard !Task.isCancelled else { return }
             withAnimation(.spring(response: 0.46, dampingFraction: 0.86)) { opened = true }
+
+            // Soft rather than light, and twice: a duller tap than the landings and a
+            // rhythm they never use, so the two are told apart by feel alone. The pair
+            // straddles the opening — one as the card starts moving, one as it has
+            // finished — rather than both up front, which would read as a stutter.
+            let tap = UIImpactFeedbackGenerator(style: .soft)
+            tap.prepare()
+            tap.impactOccurred(intensity: 0.45)
+            try? await Task.sleep(for: .seconds(Self.unfold))
+            guard !Task.isCancelled else { return }
+            tap.impactOccurred(intensity: 0.35)
         }
     }
 
     private func rewind() {
         runner?.cancel()
+        entered = false
         landed = 1
         opened = false
     }
@@ -1304,10 +1350,14 @@ private struct GradeCurve: View {
     ///
     /// Each line is felt as well as drawn, out of the train of knocks the profile's
     /// shudder is built from rather than out of Core Haptics: the red one light, the
-    /// white one half again as strong and on a firmer generator, so the second reads as
-    /// a rumble against the first's buzz. Then the landing, and the two are told apart by force — the red end is a
-    /// soft tap because arriving where you started is not an event, and the Crux end is
-    /// everything the phone has.
+    /// white one on a firmer generator and reaching half again as hard, so the second
+    /// reads as a rumble against the first's buzz. Neither buzz is level — each knock is
+    /// struck at the height of the line under the drawing edge, so the white one grows
+    /// under the thumb as it climbs and the red one swells and drops back with every
+    /// good month it fails to keep. The shape of the chart arrives through the hand a
+    /// beat before the eye has finished reading it. Then the landing, and the two are
+    /// told apart by force — the red end is a soft tap because arriving where you
+    /// started is not an event, and the Crux end is everything the phone has.
     private func play() {
         runner?.cancel()
         rewind()
@@ -1324,7 +1374,7 @@ private struct GradeCurve: View {
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: Self.missDraw)) { missDrawn = 1 }
-            await rumble(soft, for: Self.missDraw, strength: 0.45)
+            await rumble(soft, for: Self.missDraw, along: Self.without, strength: 0.24...0.58)
             guard !Task.isCancelled else { return }
 
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5)
@@ -1334,7 +1384,7 @@ private struct GradeCurve: View {
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: Self.cruxDraw)) { cruxDrawn = 1 }
-            await rumble(firm, for: Self.cruxDraw, strength: 0.85)
+            await rumble(firm, for: Self.cruxDraw, along: Self.withCrux, strength: 0.3...1)
             guard !Task.isCancelled else { return }
 
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
@@ -1343,17 +1393,53 @@ private struct GradeCurve: View {
     }
 
     /// A held buzz made the only way the app makes one: knocks close enough together to
-    /// stop being knocks.
+    /// stop being knocks — but struck at the height of the line rather than at one
+    /// level, so the buzz rises and falls with what is being drawn.
+    ///
+    /// Each line is scaled against its own low and high rather than against the plot, so
+    /// the red one's wobble is felt as a wobble instead of as a flat weak hum down in
+    /// the bottom third of the chart. What keeps them apart is the range each is given:
+    /// the red one never gets past the middle of the white one's, so a good month
+    /// without Crux still comes through weaker than the worst one with it.
     private func rumble(_ knock: UIImpactFeedbackGenerator,
                         for duration: TimeInterval,
-                        strength: CGFloat) async {
+                        along points: [CGPoint],
+                        strength: ClosedRange<CGFloat>) async {
+        let low = points.map(\.y).min() ?? 0
+        let high = points.map(\.y).max() ?? 1
         let beat = 40
-        for _ in 0..<max(1, Int(duration * 1000) / beat) {
-            knock.impactOccurred(intensity: strength)
+        let beats = max(1, Int(duration * 1000) / beat)
+        for step in 0..<beats {
+            // Where the wipe has got to, not where the clock has: the reveal is eased,
+            // and a knock taken off the raw clock would run ahead of the drawing edge
+            // through the middle of the line. Smoothstep stands in for `.easeInOut`,
+            // which is a bezier — close enough that the hand cannot pick the two apart.
+            let time = CGFloat(step) / CGFloat(beats)
+            let x = time * time * (3 - 2 * time)
+            let height = (Self.height(of: points, atX: x) - low) / max(high - low, 0.0001)
+            knock.impactOccurred(
+                intensity: strength.lowerBound
+                    + (strength.upperBound - strength.lowerBound) * height)
             knock.prepare()
             try? await Task.sleep(for: .milliseconds(beat))
             if Task.isCancelled { return }
         }
+    }
+
+    /// The line's height at a point across it, walked straight between the control
+    /// points rather than along the spline that is drawn through them. They sit about a
+    /// month apart and the curve never strays far from the chord between two of them —
+    /// a difference the eye can find and the hand cannot.
+    private static func height(of points: [CGPoint], atX x: CGFloat) -> CGFloat {
+        guard let first = points.first, let last = points.last else { return 0 }
+        if x <= first.x { return first.y }
+        for index in 1..<points.count where points[index].x >= x {
+            let start = points[index - 1]
+            let end = points[index]
+            let across = (x - start.x) / max(end.x - start.x, 0.0001)
+            return start.y + (end.y - start.y) * across
+        }
+        return last.y
     }
 
     private func rewind() {
