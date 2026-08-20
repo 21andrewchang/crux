@@ -360,15 +360,10 @@ private struct GradeCurve: View {
                     .mask(alignment: .leading) { wipe(cruxDrawn, in: size) }
 
                 // Where each of them ends up, which is the sentence the chart is making.
-                // Landing rather than arriving: scaled up from almost nothing on a
-                // loose spring, so each one overshoots and settles on its line instead
-                // of fading up in place.
-                ring(CGPoint(x: Self.markerX, y: Self.missTop), in: size, tint: Self.missTint)
-                    .scaleEffect(missLanded ? 1 : 0.2)
-                    .opacity(missLanded ? 1 : 0)
-                ring(CGPoint(x: Self.markerX, y: Self.cruxTop), in: size, tint: Color.paper)
-                    .scaleEffect(cruxLanded ? 1 : 0.2)
-                    .opacity(cruxLanded ? 1 : 0)
+                ring(CGPoint(x: Self.markerX, y: Self.missTop), in: size,
+                     tint: Self.missTint, landed: missLanded)
+                ring(CGPoint(x: Self.markerX, y: Self.cruxTop), in: size,
+                     tint: Color.paper, landed: cruxLanded)
 
                 Text("Without Crux")
                     .font(.caption.weight(.medium))
@@ -519,10 +514,18 @@ private struct GradeCurve: View {
         }
     }
 
-    private func ring(_ point: CGPoint, in size: CGSize, tint: Color) -> some View {
+    /// The scale goes on the circle, before it is placed. Put after `position` it
+    /// scales the full-size box the dot is positioned *within*, and a box scaled about
+    /// its own centre drags whatever is in it towards the middle of the chart — which is
+    /// where the bounce across x and y was coming from. Scaled first, the dot never
+    /// leaves the line it sits on; it only grows there.
+    private func ring(_ point: CGPoint, in size: CGSize,
+                      tint: Color, landed: Bool) -> some View {
         Circle()
             .fill(tint)
             .frame(width: 9, height: 9)
+            .scaleEffect(landed ? 1 : 0.2)
+            .opacity(landed ? 1 : 0)
             .position(Self.place(point, in: size))
     }
 
