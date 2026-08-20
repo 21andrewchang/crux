@@ -17,6 +17,11 @@ struct RootView: View {
                 QuizView(onFinish: onboarding.finishQuiz)
             case .loading:
                 LoadingView(onFinish: onboarding.finishLoading)
+            case .profile:
+                // What the quiz was for, before anything is asked for in return: the
+                // answers drawn as one shape. It comes before the wall on purpose —
+                // this is the screen that makes the wall worth answering.
+                ProfileView(onFinish: onboarding.finishProfile)
             case .paywall:
                 // A screen of its own rather than a cover over anything: there is
                 // nothing behind it at this point in the flow, and nothing behind it

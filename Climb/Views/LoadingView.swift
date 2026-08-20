@@ -65,7 +65,8 @@ struct LoadingView: View {
                 .rotationEffect(.degrees(-90))
 
             Text("\(Int(progress * 100))%")
-                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                .font(.system(size: 44, weight: .heavy))
+                .tracking(-1)
                 .monospacedDigit()
         }
         .frame(width: 180, height: 180)

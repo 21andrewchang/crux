@@ -14,9 +14,15 @@ import Observation
 /// and inside the quiz the question itself. Only `isComplete` is behind them for good.
 @Observable
 final class Onboarding {
-    enum Phase: String { case quiz, loading, paywall, tutorial, done }
+    enum Phase: String { case quiz, loading, profile, paywall, tutorial, done }
 
     static let shared = Onboarding()
+
+    /// Whether the walkthrough is in the flow at all. Off, the paywall is the last
+    /// screen of onboarding and paying opens the app itself. The tutorial, its seeded
+    /// note and the host that puts it on screen are all still here and still work —
+    /// this only decides whether the flow goes through them.
+    static let showsTutorial = false
 
     /// Whether the flow ends on the paywall at all. Off, the walkthrough hands
     /// straight over to the app — the screen and everything behind it (`Store`,
@@ -67,16 +73,32 @@ final class Onboarding {
         let defaults = UserDefaults.standard
         phase = defaults.string(forKey: Self.phaseKey).flatMap(Phase.init) ?? .quiz
         quizIndex = defaults.integer(forKey: Self.quizIndexKey)
-        answers = defaults.dictionary(forKey: Self.answersKey) as? [String: String] ?? [:]
+        var saved = defaults.dictionary(forKey: Self.answersKey) as? [String: String] ?? [:]
+        // The middle rung of the hang question dropped its "=" — an answer given before
+        // that is the same answer and is rewritten rather than left as a row the quiz
+        // no longer offers, which would come back unticked and read out with the sign
+        // still on it.
+        if saved["hang"] == "= Bodyweight" {
+            saved["hang"] = "Bodyweight"
+            defaults.set(saved, forKey: Self.answersKey)
+        }
+        answers = saved
         // Someone left standing on the paywall by an earlier build is let through to
         // the walkthrough rather than held on a screen that is no longer shown.
-        if !Self.showsPaywall, phase == .paywall { phase = .tutorial }
+        if !Self.showsPaywall, phase == .paywall { phase = Self.showsTutorial ? .tutorial : .done }
+        // Likewise for anyone left standing in the walkthrough by an earlier build.
+        if !Self.showsTutorial, phase == .tutorial { phase = .done }
     }
 
     /// Out of the quiz into the beat where the answers are made something of.
     func finishQuiz() { phase = .loading }
 
-    func finishLoading() { phase = Self.showsPaywall ? .paywall : .tutorial }
+    /// Out of the fill into the thing it was filling for: the profile the answers
+    /// were turned into. The loading screen promises a climbing profile in its first
+    /// line — this is the screen that has to exist for that to be true.
+    func finishLoading() { phase = .profile }
+
+    func finishProfile() { phase = Self.showsPaywall ? .paywall : Self.next(after: .paywall) }
 
     /// Back out of the walkthrough into the quiz — onto its last question. The index is
     /// left where the quiz ended for exactly this: back is one step back, not a return
@@ -88,8 +110,17 @@ final class Onboarding {
     /// both open on the app itself. This is the end of the flow now.
     func leaveTutorial() { phase = .done }
 
-    /// Paid, and into the walkthrough: the first thing done with what was just bought.
-    func finishPaywall() { phase = .tutorial }
+    /// Paid, and into the walkthrough — or, with the walkthrough out of the flow,
+    /// straight into the app, which is what was just bought.
+    func finishPaywall() { phase = Self.next(after: .paywall) }
+
+    /// What follows a screen once the screens that are switched off are stepped over.
+    private static func next(after phase: Phase) -> Phase {
+        switch phase {
+        case .paywall: showsTutorial ? .tutorial : .done
+        default: .done
+        }
+    }
 
     /// Debug helper: back to the top of the flow. Where you are, and nothing you own —
     /// there is no path in the app that deletes a note without being asked to.

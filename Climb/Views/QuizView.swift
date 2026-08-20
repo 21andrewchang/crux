@@ -30,6 +30,11 @@ struct QuizView: View {
         /// It sits inside the space the header already holds, so adding one to a
         /// question never moves that screen's answers.
         var note: String?
+        /// Whether this question is worth asking at all, given what has been said so
+        /// far. A question that isn't is stepped straight over in both directions, so
+        /// nobody who has just told us they can't do a pull-up is asked how much weight
+        /// they add to one.
+        var asks: (([String: String]) -> Bool)?
     }
 
     /// The vocabulary strengths and weaknesses share, so that "good at" and "held back
@@ -42,29 +47,39 @@ struct QuizView: View {
                                      "Route reading", "Flexibility", "Mentality",
                                      "Recovery"]
 
-    /// The grade ladder, whole and unchanged on both screens that ask about it: what
-    /// you're on and what you're after are the same rungs read twice, so the gap
-    /// between the two answers is a number of rungs rather than something to work out.
-    private static let grades = ["V0–V2", "V3–V5", "V6–V8", "V9–V11", "V12+"]
-
     // Ordered by how much thinking each one costs, cheapest first: facts about you,
     // then facts about your climbing, then a judgement about yourself, and only at the
     // end what you want out of the app — the one question worth arriving at with the
-    // rest already said. The three numbers sit in the first stretch with the other
-    // facts, on a ruler rather than a list.
+    // rest already said. The three numbers open it, on a ruler rather than a list,
+    // because the quickest thing to answer should be the thing that is already up.
     static let questions: [Question] = [
-        .init(id: "age", title: "How old are you?",
-              options: ["Under 18", "18–24", "25–34", "35–44", "45+"]),
         .init(id: "height", title: "How tall are you?", options: [], measure: .height),
         .init(id: "weight", title: "What do you weigh?", options: [], measure: .weight),
         // Asked straight after height because that is what it is measured against, and
         // asked at all because it is the one body number climbers already know.
         .init(id: "apeIndex", title: "What's your ape index?", options: [],
               measure: .apeIndex, note: "Arm span minus height."),
-        .init(id: "grade", title: "What's your project grade?", options: grades),
-        // Straight after what you're on, in the same buckets, so the two together are
-        // the gap the app is for.
-        .init(id: "goalGrade", title: "What's your goal grade?", options: grades),
+        // Behind the numbers rather than in front of them: a ruler is answered with a
+        // thumb and gets the quiz moving, where a list of age brackets is the sort of
+        // form question that makes the first screen feel like a form.
+        .init(id: "age", title: "How old are you?",
+              options: ["Under 18", "18–24", "25–34", "35–44", "45+"]),
+        // The two grades, both on the V scale itself rather than in three-wide buckets.
+        // These are the answers a climber knows to the rung — nobody projects "V6 to
+        // V8" — and bucketing them threw away the one thing the pair is asked for: the
+        // gap. Under a banded ladder V5→V6 and V5→V8 were the same answer, and a goal
+        // you have already met at the bottom of its own band is not a goal.
+        //
+        // The profile still reads *out* in bands, which is the right way round: what
+        // you tell the app is a fact and comes in exact, what it tells you back is an
+        // estimate and goes out as a range.
+        .init(id: "grade", title: "What's your project grade?", options: [],
+              measure: .grade, note: "The hardest climb you're working on."),
+        // Straight after what you're on, on the same tape, and opening on whatever that
+        // answer landed on — so the goal is however far it gets dragged from there, and
+        // dragging it nowhere is the honest zero rather than a number the app picked.
+        .init(id: "goalGrade", title: "What's your goal grade?", options: [],
+              measure: .goalGrade),
         .init(id: "experience", title: "How long have you been climbing?",
               options: ["Just started", "Under a year", "1–3 years", "3+ years"]),
         .init(id: "frequency", title: "How often do you climb?",
@@ -81,6 +96,34 @@ struct QuizView: View {
         .init(id: "strengths", title: "What are you good at?",
               options: attributes, allowsMultiple: true, tint: .green,
               carriesOver: "weaknesses", note: "Your weaknesses stay marked in red."),
+        // The first questions with a right answer. They go here, after the two
+        // screens of opinion, because they are the ones the profile is actually built
+        // out of — and because a number is a harder thing to give than a tick, which
+        // makes it the wrong way to open a quiz and the right way to close one.
+        .init(id: "pullUps", title: "How many pull-ups can you do?", options: [],
+              measure: .pullUps, note: "Rough estimate. Do not test your limit."),
+        // Skipped for anyone who just said none: asking how much weight they add to a
+        // pull-up they can't do is the quiz not listening.
+        .init(id: "pullUpMax", title: "How much can you add for one?", options: [],
+              measure: .pullUpMax, note: "Rough estimate. Do not test your limit.",
+              asks: { ($0["pullUps"].flatMap { Int($0.prefix { $0.isNumber }) } ?? 0) > 0 }),
+        // The one thing that predicts what you climb better than anything else, and the
+        // one question here that fought hardest against being asked. A tape wanted a
+        // number almost nobody has measured; every wording of the middle rungs was vague
+        // about the thing that mattered. What works is a ladder whose top half is about
+        // one arm and whose bottom half isn't: nobody has to estimate a percentage, and
+        // the three rungs below one-arm are read off one word and a sign — under, on,
+        // over — where a sentence took six words to hedge at what ">" says flat.
+        //
+        // The rows are the rings, in order, which is why the profile reads this answer
+        // by its position in this list rather than by matching its words.
+        .init(id: "hang", title: "How much can you hang on a 20 mm edge?",
+              options: ["< Bodyweight",
+                        "Bodyweight",
+                        "> Bodyweight",
+                        "One arm",
+                        "One arm, easily"],
+              note: "Rough estimate. Do not test your limit."),
         .init(id: "goal", title: "What are you here for?",
               options: ["Send a project", "Get stronger", "Fix my technique", "Track my sessions"]),
     ]
@@ -104,6 +147,14 @@ struct QuizView: View {
     /// it is both a label on screen and a key in `chosen`.
     private static let otherOption = "Something else"
 
+    /// How a row arrives on a screen that has just come up: a spring out of slightly
+    /// small, so the list lands rather than simply being there.
+    private static let rowEntrance = Animation.spring(response: 0.48, dampingFraction: 0.78)
+
+    /// The wait between one row starting and the next, top to bottom — enough to read
+    /// as one after another, short enough that ten of them are still one gesture.
+    private static let rowStagger = 0.075
+
     var onFinish: () -> Void
 
     /// Kept on `Onboarding` rather than here, so quitting mid-quiz comes back to the
@@ -116,10 +167,6 @@ struct QuizView: View {
     @State private var other = ""
     /// The ruler's answer, in metric, whichever units it is being shown in.
     @State private var measureValue: Double = 0
-    /// Which units the numbers are read in. Kept across launches and across all three
-    /// number screens, and started from wherever the phone is set up — it is a way of
-    /// reading the answer, never part of it.
-    @AppStorage("usesImperial") private var imperial = Locale.current.measurementSystem != .metric
     @FocusState private var otherFocused: Bool
     /// Two lines of question with a line of note under them, held whether or not a
     /// given screen fills it — and grown with the type rather than staying put while
@@ -135,11 +182,21 @@ struct QuizView: View {
     /// The strip of screen the home indicator sits in, which the arrow bar covers and
     /// so has to hold clear itself.
     @State private var safeBottom: CGFloat = 34
+    /// Whether this screen's rows have come in yet. Dropped the moment the question
+    /// changes and put back on the next pass, which is what makes them arrive at all.
+    @State private var revealed = false
     @State private var picked = UIImpactFeedbackGenerator(style: .medium)
     @State private var unpicked = UIImpactFeedbackGenerator(style: .light)
 
     private var index: Int { min(max(onboarding.quizIndex, 0), Self.questions.count - 1) }
     private var question: Question { Self.questions[index] }
+
+    /// Which questions this run is being asked, given what has been answered. Recomputed
+    /// rather than stored: an answer changed on the way back through the quiz has to be
+    /// able to open a question that was skipped the first time past.
+    private var asked: [Int] {
+        Self.questions.indices.filter { Self.questions[$0].asks?(onboarding.answers) ?? true }
+    }
 
     private var rows: [String] {
         question.allowsOther ? question.options + [Self.otherOption] : question.options
@@ -168,10 +225,16 @@ struct QuizView: View {
         // the question and out under the arrows instead of stopping at a hard edge.
         ZStack(alignment: .top) {
             if let measure = question.measure {
-                MeasurePicker(measure: measure, value: $measureValue, imperial: $imperial)
+                // The tape hangs off the bottom of the question, in the space the
+                // question leaves it. The ladder doesn't: it owns the whole screen the
+                // way the rows do, so the rung under the eye sits in the middle of the
+                // glass rather than in the middle of the room left over — and the ones
+                // above it run up behind the question instead of stopping under it.
+                MeasurePicker(measure: measure, value: $measureValue)
                     .padding(.horizontal, 24)
-                    .padding(.top, chromeHeight)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, measure.isLadder ? 0 : chromeHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: measure.isLadder ? .center : .top)
             } else {
                 optionList
             }
@@ -192,10 +255,14 @@ struct QuizView: View {
         .animation(.easeInOut(duration: 0.15), value: chosen)
         .onAppear {
             loadAnswer()
+            reveal()
             picked.prepare()
             unpicked.prepare()
         }
-        .onChange(of: index) { loadAnswer() }
+        .onChange(of: index) {
+            loadAnswer()
+            reveal()
+        }
     }
 
     /// The progress bar and the question, floated over the list with nothing solid
@@ -271,10 +338,17 @@ struct QuizView: View {
     private var optionList: some View {
         ScrollView {
             VStack(spacing: 12) {
-                ForEach(rows, id: \.self) { option in
+                ForEach(Array(rows.enumerated()), id: \.element) { position, option in
                     Button { tap(option) } label: { row(option) }
                         .buttonStyle(.plain)
                         .disabled(carried.contains(option))
+                        .scaleEffect(revealed ? 1 : 0.88)
+                        .opacity(revealed ? 1 : 0)
+                        // Only the arrival is animated: going out is instant, so a new
+                        // question starts from nothing instead of shrinking the old one
+                        // away first.
+                        .animation(revealed ? Self.rowEntrance.delay(Double(position) * Self.rowStagger) : nil,
+                                   value: revealed)
                 }
             }
             .padding(.horizontal, 24)
@@ -321,7 +395,7 @@ struct QuizView: View {
     private var arrowBar: some View {
         ZStack(alignment: .bottom) {
             HStack {
-                arrow("chevron.left", enabled: index > 0, action: back)
+                arrow("chevron.left", enabled: asked.contains { $0 < index }, action: back)
                 Spacer()
                 arrow("chevron.right", enabled: canAdvance) { advance() }
             }
@@ -402,9 +476,13 @@ struct QuizView: View {
     }
 
     /// How much of the bar is behind you: the question you are on counts, so the first
-    /// screen is already a step in rather than empty.
+    /// screen is already a step in rather than empty. Measured against the questions
+    /// actually being asked, so skipping one moves the bar on rather than leaving a
+    /// gap in it that never fills.
     private var filled: CGFloat {
-        CGFloat(index + 1) / CGFloat(Self.questions.count)
+        let asked = asked
+        let place = asked.firstIndex(of: index).map { $0 + 1 } ?? asked.count
+        return CGFloat(place) / CGFloat(max(asked.count, 1))
     }
 
     /// What this screen would be recorded as: the ticked rows in the order the list
@@ -426,7 +504,7 @@ struct QuizView: View {
     private func loadAnswer() {
         let saved = onboarding.answers[question.id] ?? ""
         if let measure = question.measure {
-            measureValue = saved.isEmpty ? measure.start : measure.value(from: saved)
+            measureValue = saved.isEmpty ? start(of: measure) : measure.value(from: saved)
             return
         }
         var picks: Set<String> = []
@@ -442,6 +520,24 @@ struct QuizView: View {
         }
         chosen = picks.subtracting(carried)
         other = typed
+    }
+
+    /// Where a ruler comes up on a question nothing has been said to yet. Its own
+    /// starting point, except for the goal grade — which opens on whatever the grade
+    /// before it landed on, so every rung of goal is a rung somebody deliberately
+    /// dragged rather than one the tape was already sitting on.
+    private func start(of measure: BodyMeasure) -> Double {
+        guard measure == .goalGrade, let current = onboarding.answers["grade"] else {
+            return measure.start
+        }
+        return BodyMeasure.grade.value(from: current)
+    }
+
+    /// Takes the rows off the screen and puts them back on the next pass, so the ones
+    /// that were already there for the question before still come in for this one.
+    private func reveal() {
+        revealed = false
+        DispatchQueue.main.async { revealed = true }
     }
 
     private func tap(_ option: String) {
@@ -477,8 +573,10 @@ struct QuizView: View {
     private func advance(recording text: String? = nil) {
         otherFocused = false
         onboarding.answers[question.id] = text ?? answerText
-        if index + 1 < Self.questions.count {
-            onboarding.quizIndex = index + 1
+        // Read after the answer is written, not before: whether the next question is
+        // asked at all can turn on the one just given.
+        if let next = asked.first(where: { $0 > index }) {
+            onboarding.quizIndex = next
         } else {
             onFinish()
         }
@@ -489,6 +587,6 @@ struct QuizView: View {
     private func back() {
         otherFocused = false
         onboarding.answers[question.id] = answerText
-        onboarding.quizIndex = max(0, index - 1)
+        onboarding.quizIndex = asked.last { $0 < index } ?? 0
     }
 }

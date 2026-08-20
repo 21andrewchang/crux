@@ -108,7 +108,8 @@ struct CheckInFlow: View {
 
             if let value = CheckIn.readiness(answers), let verdict = CheckIn.verdict(for: answers) {
                 Text("\(value)")
-                    .font(.system(size: 96, weight: .bold, design: .rounded))
+                    .font(.system(size: 96, weight: .heavy))
+                    .tracking(-2)
                     .foregroundStyle(verdict.band.tint)
                     .contentTransition(.numericText())
 
