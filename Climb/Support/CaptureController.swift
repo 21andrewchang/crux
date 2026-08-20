@@ -35,6 +35,9 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
     private var ticker: AnyCancellable?
     private var startedAt: Date?
     private var isSimulating = false
+    /// Guards the one-time capture-session configuration on `sessionQueue`, so a second
+    /// `prepare()` can never open a second transaction on an already-configured session.
+    private var isConfigured = false
     private var device: AVCaptureDevice?
     /// Raw device factor that reads as "1×". On a phone with an ultra-wide lens the
     /// virtual device starts at the widest lens, so 1× sits at the first switch-over point.
@@ -62,15 +65,25 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
 
         let configured = await withCheckedContinuation { continuation in
             sessionQueue.async {
+                // A second prepare() must not open a transaction on a session that is
+                // already configured; just make sure it is running and return.
+                guard !self.isConfigured else {
+                    if !self.session.isRunning { self.session.startRunning() }
+                    continuation.resume(returning: true); return
+                }
+
                 self.session.beginConfiguration()
                 self.session.sessionPreset = .high
-                defer { self.session.commitConfiguration() }
+
+                // Close the transaction before reporting a failure, so we never leave one open.
+                func fail() {
+                    self.session.commitConfiguration()
+                    continuation.resume(returning: false)
+                }
 
                 do {
                     let videoInput = try AVCaptureDeviceInput(device: camera)
-                    guard self.session.canAddInput(videoInput) else {
-                        continuation.resume(returning: false); return
-                    }
+                    guard self.session.canAddInput(videoInput) else { fail(); return }
                     self.session.addInput(videoInput)
 
                     if let mic = AVCaptureDevice.default(for: .audio),
@@ -79,9 +92,7 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
                         self.session.addInput(audioInput)
                     }
 
-                    guard self.session.canAddOutput(self.output) else {
-                        continuation.resume(returning: false); return
-                    }
+                    guard self.session.canAddOutput(self.output) else { fail(); return }
                     self.session.addOutput(self.output)
 
                     self.baseZoomFactor = Self.baseZoomFactor(for: camera)
@@ -90,9 +101,15 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
                                                      camera.minAvailableVideoZoomFactor)
                         camera.unlockForConfiguration()
                     }
+
+                    // Commit, start, then resume — all in order on sessionQueue, so
+                    // startRunning() never races an open configuration transaction.
+                    self.session.commitConfiguration()
+                    self.session.startRunning()
+                    self.isConfigured = true
                     continuation.resume(returning: true)
                 } catch {
-                    continuation.resume(returning: false)
+                    fail()
                 }
             }
         }
@@ -104,7 +121,6 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
             return
         }
 
-        sessionQueue.async { self.session.startRunning() }
         let stops = Self.zoomStops(for: camera, base: baseZoomFactor)
         // Attempts are filmed close to the wall, so the widest lens is the useful default.
         let start = stops.contains(Self.preferredZoom) ? Self.preferredZoom : 1
