@@ -242,7 +242,14 @@ final class BarParkModel: NSObject {
 
     // MARK: Diagnostics — Documents/barpark.log, pulled off the device with
     // devicectl. Rip out once the handoff is signed off.
-    private static let debugLogging = true
+#if DEBUG
+    // Flip to true to write Documents/barpark.log while chasing a timer bug.
+    private static let debugLogging = false
+    #else
+    // Release — TestFlight and the App Store — can never carry a development switch,
+    // whatever the line above happens to say when a build is cut.
+    private static let debugLogging = false
+    #endif
     private var logHandle: FileHandle?
 
     private func log(_ line: String) {

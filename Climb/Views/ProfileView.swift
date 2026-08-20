@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 import UIKit
 
@@ -103,11 +104,33 @@ struct ProfileView: View {
     /// flow end to end is the only way to see it, and it shouldn't cost a relaunch.
     /// It puts back only where you are in the flow: whatever the last pass left in the
     /// practice note is still there at the start of the next.
-    private static let restartsForDevelopment = true
+#if DEBUG
+    // Flip to true to make the wall's button replay the flow instead of buying.
+    private static let restartsForDevelopment = false
+    #else
+    // Release — TestFlight and the App Store — can never carry a development switch,
+    // whatever the line above happens to say when a build is cut.
+    private static let restartsForDevelopment = false
+    #endif
 
-    var onFinish: () -> Void
+    /// Opened from the app rather than walked into at the end of the first run: the
+    /// same chart and the same numbers, settled rather than played, with nothing asked
+    /// for underneath. Somebody coming back to read their profile has already sat
+    /// through the animation once, and once is what it is worth.
+    var isReview = false
+
+    /// Which side of the card is being drawn. The profile reads as one object with two
+    /// faces — the shape and what it comes to on the front, the answers it was built
+    /// from on the back — so the two are the same view rather than two screens.
+    enum Face { case front, back }
+    var face: Face = .front
+
+    var onFinish: () -> Void = {}
 
     @State private var onboarding = Onboarding.shared
+    @Query private var allSessions: [ClimbSession]
+    @Query private var allClimbs: [Climb]
+    @Query private var allAttempts: [Attempt]
     /// Whether the empty chart — rings, spokes, and the green core that is about to be
     /// pushed out into a shape — has come up yet.
     @State private var chartIn = false
@@ -182,6 +205,87 @@ struct ProfileView: View {
         // The screen builds itself: the chart alone in the middle, then up to the top,
         // then what it was read out of under it, and the grade last of all at the
         // bottom — which is the order the three of them were arrived at.
+        if isReview { reviewColumn } else { salesColumn }
+    }
+
+    /// The card's front: the shape at full size with what it comes to under it.
+    ///
+    /// Nothing is shared with the wall's copy of this screen but the drawing. There the
+    /// chart is a thing being revealed and then sold against; here it is a thing being
+    /// looked up, so it arrives whole and stays put.
+    private var reviewColumn: some View {
+        Group {
+            switch face {
+            case .front: reviewFront
+            case .back: reviewBack
+            }
+        }
+        .foregroundStyle(Color.paper)
+        .task { await settle() }
+    }
+
+    private var reviewFront: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // The grade first and hard into the corner, the way a card carries its
+            // value: it is the one thing on here read at a glance and from across a
+            // room, and centring it under the chart made it a caption on the drawing
+            // rather than the headline the drawing explains.
+            grades
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            chart
+                .frame(height: Self.chartHeight)
+
+            Spacer(minLength: 0)
+        }
+        // Up alongside the disc rather than below it: the grade is short enough to sit
+        // level with the turn button instead of starting a row of its own under it.
+        .padding(.top, -30)
+    }
+
+    private var reviewBack: some View {
+        VStack(spacing: 14) {
+            info
+            tally
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// What the account has in it, as four numbers.
+    ///
+    /// On the back with the quiz's answers rather than on the front with the shape,
+    /// because these are the only things on the card that move: the shape is what you
+    /// said you were when you arrived, and this is what you have done since. Two rows
+    /// of two, so the pairs read across — what you logged, and what you filmed.
+    private var tally: some View {
+        // The seeded goal note is a page of the app rather than a session, and a
+        // deleted attempt is not one either.
+        let sessions = allSessions.filter { $0.id != Goals.id && $0.id != Tutorial.id }.count
+        let live = allAttempts.filter { $0.deletedAt == nil }
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.fill")
+                    .font(.system(size: 11))
+                Text("Logged")
+                    .font(.footnote.weight(.semibold))
+            }
+            .foregroundStyle(Color.paper.opacity(0.4))
+
+            HStack(alignment: .top, spacing: 16) {
+                column([Stat(label: "Sessions", value: "\(sessions)"),
+                        Stat(label: "Climbs", value: "\(allClimbs.count)")])
+                column([Stat(label: "Clips", value: "\(live.filter { $0.videoFilename != nil }.count)"),
+                        Stat(label: "Attempts", value: "\(live.count)")])
+            }
+        }
+        // No panel of its own. On the card these sit on glass, and a grey box inside
+        // a glass one is a second card where there is only one thing — the glass is
+        // already the edge, so drawing another inside it just makes the page busier.
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var salesColumn: some View {
         VStack(spacing: 0) {
             // The chart and the grades under it travel together. On the first beat the
             // chart alone is centred, with the grades' room already held below it and
@@ -311,7 +415,12 @@ struct ProfileView: View {
     /// to make room for the one it is being read against.
     private var grades: some View {
         HStack(spacing: 16) {
-            grade(grade(for: "grade"), tint: tint, dim: true)
+            // Full strength when the profile is being read rather than sold. Dimming
+            // is only ever relative — it is what makes this number recede next to the
+            // goal grade arriving beside it — and on a sheet where no goal ever comes,
+            // a number mixed halfway to black is just a grade drawn wrong. The wall's
+            // copy of this screen is untouched: it still has something to recede for.
+            grade(grade(for: "grade"), tint: tint, dim: !isReview)
                 // Last of all, and on the same spring the corners land on, so it reads
                 // as the seventh beat of the same reveal rather than as a caption.
                 .scaleEffect(gradeIn ? 1 : 0.6)
@@ -375,8 +484,13 @@ struct ProfileView: View {
             .foregroundStyle(.metal(dim ? tint.mix(with: .black, by: 0.45) : tint))
             .overlay { if shining { sheen(label) } }
             // One soft shadow under it, black rather than coloured, so the number sits
-            // above the screen instead of glowing on it.
-            .shadow(color: .black.opacity(0.6), radius: 16, y: 8)
+            // above the screen instead of glowing on it. Lighter on the card: that
+            // shadow was set to carry the number off a black screen, and the same
+            // weight on a grey panel a few inches across reads as smudge under it
+            // rather than as height above it.
+            .shadow(color: .black.opacity(isReview ? 0.32 : 0.6),
+                    radius: isReview ? 9 : 16,
+                    y: isReview ? 4 : 8)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
     }
@@ -502,6 +616,14 @@ struct ProfileView: View {
     /// already telling them where they are before a single label is read.
     private var tint: Color { GradeTier.of(number(for: "grade")).color }
 
+    /// The same rank colour, off the answers on file rather than off an instance — so
+    /// anything drawing around the profile can be lit in it without building the view.
+    static var rankTint: Color {
+        let measure = BodyMeasure.grade
+        let answer = Onboarding.shared.answers["grade"] ?? measure.answer(metric: measure.start)
+        return GradeTier.of(measure.value(from: answer)).color
+    }
+
     /// The dream's, likewise — which is what makes the goal grade's own tier the thing
     /// the second shape is drawn in rather than one aspirational purple for everybody.
     private var dreamTint: Color { GradeTier.of(number(for: "goalGrade")).color }
@@ -606,9 +728,11 @@ struct ProfileView: View {
                 column(Array(stats.dropFirst(half)))
             }
         }
-        .padding(18)
+        // No panel of its own. On the card these sit on glass, and a grey box inside
+        // a glass one is a second card where there is only one thing — the glass is
+        // already the edge, so drawing another inside it just makes the page busier.
+        .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.surface, in: .rect(cornerRadius: 18))
     }
 
     private func column(_ stats: [Stat]) -> some View {
@@ -944,6 +1068,31 @@ struct ProfileView: View {
 
     /// Rings first, then the corners one at a time, each with a tap under the finger.
     @Sendable
+    /// The end of `run`'s first beat, arrived at without walking through it — except
+    /// for the shape itself, which still opens.
+    ///
+    /// The rings, the spokes and the labels are furniture: they say what the chart is,
+    /// and animating furniture in is a loading screen wearing a costume. The coloured
+    /// shape is the only thing on here that is *about* the person reading it, so it is
+    /// the only thing worth watching arrive — out of the middle in one movement rather
+    /// than a corner at a time, because on a second reading the drama is not in the
+    /// order the six were measured.
+    private func settle() async {
+        chartIn = true
+        landed = Array(repeating: true, count: Self.pillars.count)
+        stage = 1
+        infoIn = true
+        gradeIn = true
+        finished = true
+        guard reaches.isEmpty || reaches.allSatisfy({ $0 <= Self.seed }) else { return }
+        reaches = Array(repeating: Self.seed, count: Self.pillars.count)
+        // One frame with the dot on screen, so the shape has somewhere to open from.
+        try? await Task.sleep(for: .milliseconds(32))
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) {
+            reaches = spokes.map { $0 / Double(Self.bands.count) }
+        }
+    }
+
     private func run() async {
         reaches = Array(repeating: Self.seed, count: Self.pillars.count)
         let tap = UIImpactFeedbackGenerator(style: .rigid)

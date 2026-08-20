@@ -14,7 +14,43 @@ import Observation
 /// and inside the quiz the question itself. Only `isComplete` is behind them for good.
 @Observable
 final class Onboarding {
-    enum Phase: String { case quiz, loading, profile, paywall, tutorial, done }
+    enum Phase: String {
+        case quiz, loading, profile, paywall, tutorial, done
+
+        /// Place in the first run overall, counting the four slides and the fifteen
+        /// questions in front of it, so a breakdown of the funnel sorts in the order
+        /// the screens are actually walked rather than alphabetically. The quiz holds
+        /// 5 through 19 — one per question — and these carry on from the end of it.
+        /// 23 is missing on purpose: the purchase sits there, and `Store` reports it,
+        /// because what was bought is known there and not here.
+        var stepIndex: Int {
+            switch self {
+            case .quiz: 5
+            case .loading: 20
+            case .profile: 21
+            // Not part of the first run at all. The wall that matters is the foot of
+            // the profile screen and there is no way past it but to buy, so this phase
+            // is only ever reached by a subscription that has since lapsed.
+            case .paywall: 90
+            case .tutorial: 23
+            // Not a screen — `.done` only means the profile is behind them, which is
+            // true whether they bought or declined. It reports nothing.
+            case .done: 0
+            }
+        }
+
+        /// What the screen is called in words, for reading the chart without the source.
+        var label: String {
+            switch self {
+            case .quiz: "Quiz"
+            case .loading: "Building your profile"
+            case .profile: "Your profile & paywall"
+            case .paywall: "Paywall (returning)"
+            case .tutorial: "Walkthrough"
+            case .done: ""
+            }
+        }
+    }
 
     static let shared = Onboarding()
 
@@ -35,13 +71,27 @@ final class Onboarding {
     /// it takes without reinstalling between passes — one line to flip while onboarding
     /// is what is being worked on. It puts back only where you are in the flow: whatever
     /// the last pass left in the practice note is still there at the start of the next.
+#if DEBUG
+    // Flip to true to have a purchase start the flow over instead of ending it.
     static let loopsForDevelopment = false
+    #else
+    // Release — TestFlight and the App Store — can never carry a development switch,
+    // whatever the line above happens to say when a build is cut.
+    static let loopsForDevelopment = false
+    #endif
 
     /// Debug: straight past the whole flow into the app, for when the thing being
     /// looked at is the app rather than the way in. Where the flow actually got to is
     /// left written down untouched, so turning this back off comes back to that screen
     /// rather than to a run that has been marked finished.
-    static let skipsOnboarding = true
+#if DEBUG
+    // Flip to true to jump straight past the first run into the app.
+    static let skipsOnboarding = false
+    #else
+    // Release — TestFlight and the App Store — can never carry a development switch,
+    // whatever the line above happens to say when a build is cut.
+    static let skipsOnboarding = false
+    #endif
 
     private static let introKey = "onboardingIntroSeen"
     private static let phaseKey = "onboardingPhase"
@@ -49,7 +99,22 @@ final class Onboarding {
     private static let answersKey = "onboardingAnswers"
 
     private(set) var phase: Phase {
-        didSet { UserDefaults.standard.set(phase.rawValue, forKey: Self.phaseKey) }
+        didSet {
+            UserDefaults.standard.set(phase.rawValue, forKey: Self.phaseKey)
+            // Every step of the flow reports itself from the one place the flow
+            // actually moves, so the funnel has no holes in it and a run that is
+            // abandoned mid-way is still the last stage it reached. Observers do not
+            // fire for the normalising writes in `init`, so only real moves are sent.
+            guard phase != oldValue else { return }
+            // The quiz reports itself a question at a time from `QuizView`, which is
+            // finer than anything this end can see; every phase past it is one screen.
+            // The quiz reports itself a question at a time from `QuizView`, and `.done`
+            // is not a screen at all — everything between them is one phase, one screen.
+            if phase != .quiz, phase != .done {
+                OnboardingAnalytics.step(phase.rawValue, stage: phase.rawValue,
+                                         index: phase.stepIndex, label: phase.label)
+            }
+        }
     }
 
     /// Whether the opening slideshow has been past. Kept apart from `phase` on purpose:
@@ -127,7 +192,7 @@ final class Onboarding {
     /// this one; it is now the bottom of this one, so a purchase made there is the end
     /// of the flow. The paywall itself is still built and still shown — over a sixth
     /// session, and to anybody whose subscription isn't current.
-    func finishProfile() { phase = .done }
+    func finishProfile() { phase = Self.next(after: .profile) }
 
     /// Back out of the walkthrough into the quiz — onto its last question. The index is
     /// left where the quiz ended for exactly this: back is one step back, not a return
@@ -146,12 +211,20 @@ final class Onboarding {
     /// What follows a screen once the screens that are switched off are stepped over.
     private static func next(after phase: Phase) -> Phase {
         switch phase {
-        case .paywall: showsTutorial ? .tutorial : .done
+        // Nothing follows the wall but the app itself. The walkthrough is gone — the
+        // app is small enough to be read by opening it, and a note that explains a
+        // note is a worse first session than a real one.
+        case .profile, .paywall: .done
         default: .done
         }
     }
 
     /// Debug helper: back to the top of the flow. Where you are, and nothing you own —
     /// there is no path in the app that deletes a note without being asked to.
-    func reset() { phase = .quiz; quizIndex = 0; answers = [:]; hasSeenIntro = false }
+    func reset() {
+        // The screens already reported are forgotten first, so a second pass through
+        // the flow in one launch reports every one of them again.
+        OnboardingAnalytics.reset()
+        phase = .quiz; quizIndex = 0; answers = [:]; hasSeenIntro = false
+    }
 }

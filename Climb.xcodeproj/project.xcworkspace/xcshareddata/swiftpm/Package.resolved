@@ -1,5 +1,5 @@
 {
-  "originHash" : "8e48cbf746f3364a238df97bffa6cc3383fcfeb545158731e0ec6ce8a819960e",
+  "originHash" : "a2a005425a54381b01f2340ea15b95f46d104d5a1ee0bca2f199b48089b372db",
   "pins" : [
     {
       "identity" : "opencv-spm",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "151a5374946aa867ff3892e0d69fd85e1ecdaf2e",
         "version" : "4.13.0"
+      }
+    },
+    {
+      "identity" : "posthog-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/PostHog/posthog-ios.git",
+      "state" : {
+        "revision" : "2f8002409e7c8c8b1f14e3ce716f543831fd941d",
+        "version" : "3.69.8"
       }
     }
   ],

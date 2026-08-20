@@ -1,4 +1,5 @@
 import SwiftUI
+import PostHog
 import SwiftData
 import UIKit
 
@@ -39,6 +40,12 @@ struct RootView: View {
         // thing that can cost you anything.
         .task {
             guard ProcessInfo.processInfo.arguments.contains("-resetOnboarding") else { return }
+            // A fresh anonymous identity along with the fresh flow. Analytics counts
+            // people, not runs: walking onboarding ten times as one person is one
+            // person who reached the end, and a funnel built on that reads 1 however
+            // many passes went into it. Starting a new identity makes a test pass look
+            // like what it is standing in for — somebody arriving for the first time.
+            PostHogSDK.shared.reset()
             onboarding.reset()
         }
     }
@@ -72,6 +79,9 @@ struct RootView: View {
             // written is still there on the other side of paying again.
             if store.isPro || !Onboarding.showsPaywall {
                 SessionListView()
+                    // The one place the first run is genuinely over: the list is up and
+                    // the wall is behind them.
+                    .onAppear { OnboardingAnalytics.completed() }
             } else {
                 PaywallView(onPurchase: {})
             }
@@ -116,21 +126,16 @@ private struct TutorialHost: View {
         .bottomBarHost(barModel)
     }
 
-    /// Onboarding's own two corners, in place of the note's: back to the quiz, and the
-    /// way out. The way out is always there — Skip before the walkthrough has been
-    /// worked through, Done once it has — so the wording is the only thing the note's
-    /// state moves, never whether the button is there at all.
+    /// One corner, not two. The walkthrough now comes after the money rather than
+    /// before it, and there is nowhere behind it worth offering: the quiz has been
+    /// answered and the subscription has been bought, so a back button here would walk
+    /// somebody who has just paid into re-answering how tall they are.
+    ///
+    /// The way out is always there — Skip before the walkthrough has been worked
+    /// through, Done once it has — so the wording is the only thing the note's state
+    /// moves, never whether the button is there at all.
     @ToolbarContentBuilder
     private var corners: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                dismissKeyboard()
-                onboarding.backToQuiz()
-            } label: {
-                Label { Text("Back") } icon: { topBarGlyph("chevron.backward") }
-            }
-            .labelStyle(.iconOnly)
-        }
         ToolbarItem(placement: .topBarTrailing) {
             let complete = onboarding.tutorialComplete
             Button(complete ? "Done" : "Skip Tutorial") { leave() }
@@ -138,18 +143,17 @@ private struct TutorialHost: View {
         }
     }
 
-    /// Out to the paywall. The note stays up behind the cover — that is the point, the
-    /// paywall rises over the thing just finished — and a note that is still the first
-    /// responder still has the keyboard up under it. Nothing takes it away, so it is
-    /// handed back here on the way out.
+    /// Out into the app, which is what was just bought. A note that is still the first
+    /// responder still has the keyboard up under it, and nothing takes it away on its
+    /// own, so it is handed back here on the way out.
     private func leave() {
         dismissKeyboard()
         onboarding.leaveTutorial()
     }
 
-    /// Neither door out of the walkthrough takes the note's keyboard with it unless it
-    /// is told to: the quiz behind and the paywall over the top both end up sharing the
-    /// screen with a keyboard belonging to a note that isn't there any more.
+    /// The way out of the walkthrough does not take the note's keyboard with it unless
+    /// it is told to, and the session list would otherwise open sharing the screen with
+    /// a keyboard belonging to a note that is no longer on it.
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                         to: nil, from: nil, for: nil)

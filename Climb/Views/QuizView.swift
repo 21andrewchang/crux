@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 import UIKit
 
@@ -266,6 +267,15 @@ struct QuizView: View {
         .overlay(alignment: .bottom) { arrowBar }
         // A new question is a new screen, not the same one re-lettered.
         .animation(.easeInOut(duration: 0.2), value: index)
+        // Each question reports itself as it comes up. The quiz is the longest stretch
+        // of the flow and the one most likely to lose somebody part-way, so it is
+        // counted a screen at a time rather than as a single step that only the
+        // finishers ever reach.
+        .onChange(of: index, initial: true) { _, page in
+            let question = Self.questions[page]
+            OnboardingAnalytics.step("quiz_\(question.id)", stage: "quiz",
+                                     index: 5 + page, label: question.title)
+        }
         .animation(.easeInOut(duration: 0.15), value: chosen)
         .onAppear {
             loadAnswer()
@@ -616,6 +626,13 @@ struct QuizView: View {
         if let next = asked.first(where: { $0 > index }) {
             onboarding.quizIndex = next
         } else {
+            // PostHog: track quiz completion with key answers as anonymous properties
+            PostHogSDK.shared.capture("onboarding_quiz_completed", properties: [
+                "questions_answered": asked.count,
+                "goal": onboarding.answers["goal"] as Any,
+                "experience": onboarding.answers["experience"] as Any,
+                "frequency": onboarding.answers["frequency"] as Any,
+            ])
             onFinish()
         }
     }

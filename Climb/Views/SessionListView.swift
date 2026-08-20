@@ -1,5 +1,6 @@
-import SwiftUI
+import PostHog
 import SwiftData
+import SwiftUI
 import UIKit
 
 /// The notes list: one row per session, newest first.
@@ -14,6 +15,14 @@ struct SessionListView: View {
     /// The global bottom bar's state; the bar itself floats over the whole
     /// navigation stack below, so it never re-enters or resets across pushes.
     @State private var barModel = BottomBarModel()
+    /// Whether the profile is up — the quiz's answers drawn as one shape, read rather
+    /// than walked into.
+    @State private var showingProfile = false
+    /// Whether the list itself is what is on screen. The card and the button that opens
+    /// it belong to this page, and the overlay carrying them sits outside the
+    /// navigation stack so it can cover the bars — which also means nothing takes it
+    /// away on a push unless this does.
+    @State private var isAtRoot = true
 
     /// The user's own sessions. The seeded walkthrough is not one of them — it belongs
     /// to onboarding, which opens it on its own and is the only place it is ever read —
@@ -68,23 +77,26 @@ struct SessionListView: View {
                     list
                 }
             }
+            .onAppear { isAtRoot = true }
+            .onDisappear { isAtRoot = false }
             .navigationTitle("Sessions")
             .searchable(text: $searchText, prompt: "Search")
+            // PostHog: track when a search query is submitted
+            .onChange(of: isSearching) { _, nowSearching in
+                if nowSearching {
+                    PostHogSDK.shared.capture("session_searched")
+                }
+            }
             .toolbar {
-                // The way back into onboarding, top-left, for as long as onboarding
-                // is the thing being built: walking the flow should cost a tap, not a
-                // reinstall or a relaunch with an argument. It moves where you are in
-                // the flow and nothing else — no note, no attempt and no video is
-                // touched by it, so it can never cost anything to press.
-                #if DEBUG
+                // The profile opposite compose: the two things this page offers that
+                // are not a session — read where you are, or start one.
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        Onboarding.shared.reset()
+                        showingProfile = true
                     } label: {
-                        Label("Replay onboarding", systemImage: "sparkles")
+                        Label("Profile", systemImage: "person.crop.circle")
                     }
                 }
-                #endif
                 // Compose lives top-right — the same corner the ellipsis holds
                 // inside a session — leaving the bottom bar to the search field
                 // and the (globally rendered) timer capsule.
@@ -140,6 +152,19 @@ struct SessionListView: View {
             }
         }
         .bottomBarHost(barModel)
+        // The page goes soft under the card rather than only dark. Ramped rather than
+        // switched: the blur comes up with the card and goes with it, so the list reads
+        // as falling out of focus behind something arriving in front of it instead of
+        // being replaced by a blurred copy of itself.
+        .blur(radius: showingProfile ? 18 : 0)
+        .animation(.easeOut(duration: 0.28), value: showingProfile)
+        // Over the whole page, bars included: the card is a thing held up in front of
+        // the list, not a panel inside it.
+        .overlay {
+            if isAtRoot {
+                ProfileCard(isPresented: showingProfile) { showingProfile = false }
+            }
+        }
     }
 
     /// Notes' list: rows sit in rounded cards on a grouped background, no separators —
@@ -239,10 +264,49 @@ struct SessionListView: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No Sessions", systemImage: "figure.climbing")
-        } description: {
-            Text("Start a new note when you get to the wall.")
+            // The compose mark rather than a climber: the thing missing from this
+            // screen is a note, and the glyph that says so is the one in the corner
+            // that makes them — the same mark on the button under it.
+            Label {
+                // Down to the size of the mark above it and set in the same grey: the
+                // line is a caption on the button, not a headline over the page. A
+                // large bright title here reads as the most important thing on a
+                // screen whose only point is the one button under it.
+                Text("Start Your First Session")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.paper.opacity(0.3))
+            } icon: {
+                // Faint, because it is the least important thing here. The mark is
+                // saying what the screen is, not asking to be pressed — the button
+                // under it is the only thing on this page worth reaching for, and a
+                // full-strength glyph above it competes for the same attention.
+                Image(systemName: "square.and.pencil")
+                    .foregroundStyle(Color.paper.opacity(0.3))
+            }
+        } actions: {
+            // The same button the wall closes on — black on paper, capsule, 17pt
+            // semibold — so the one press worth making looks the same wherever the
+            // app puts it in front of you.
+            Button(action: createSession) {
+                Text("Continue")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(Color.paper, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            // The same 24pt gutter the rest of the app sets its full-width buttons in,
+            // and a gap above it — `ContentUnavailableView` sets its actions tight
+            // under the label, which reads as the button hanging off the text.
+            .padding(.horizontal, 24)
+            .padding(.top, 14)
         }
+        // Up off the centre line. Dead centre puts the button in the middle of the
+        // glass, which is where a thumb rests rather than where the eye lands first —
+        // and the page reads better with the weight above the halfway mark and room
+        // left under it.
+        .offset(y: -56)
     }
 
     private var noResultsState: some View {
@@ -254,8 +318,15 @@ struct SessionListView: View {
         let session = ClimbSession()
         modelContext.insert(session)
         try? modelContext.save()
+        // PostHog: track new session creation
+        PostHogSDK.shared.capture("session_created", properties: [
+            "total_sessions": ownSessions.count + 1,
+        ])
         checkingIn = session
     }
+
+    /// Fires once when a search query is first entered, so we know search is being used.
+    private var searchQueryForTracking: String { searchText.trimmingCharacters(in: .whitespaces) }
 
     /// Puts the check-in away and opens the note behind it. The two are not swapped in
     /// one turn: dismissing a cover and pushing a destination in the same frame drops

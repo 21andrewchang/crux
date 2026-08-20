@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 import UIKit
 
@@ -36,6 +37,17 @@ struct PaywallView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black)
         .animation(.easeInOut(duration: 0.25), value: step)
+        // PostHog: track paywall impression once per presentation
+        .onAppear {
+            PostHogSDK.shared.capture("paywall_viewed")
+            // Not a step of the first run: the wall in the foot of the profile is the
+            // only way out of that screen, so nobody walking the flow ever reaches this
+            // one. It is what a lapsed or refunded subscriber meets on a later launch,
+            // and it is numbered far past the flow so it sorts clear of it rather than
+            // sitting in the middle pretending to be a screen people walk through.
+            OnboardingAnalytics.step("paywall_returning", stage: "return",
+                                     index: 90, label: "Paywall (returning)")
+        }
         // Prices are asked for as the screen comes up; until they land the plans show
         // what they cost in dollars, so the rows are never empty. The first two steps
         // wait on the same answer — whether there is a trial to talk about at all —

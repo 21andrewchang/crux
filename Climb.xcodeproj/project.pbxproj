@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		CB0000000000000000000010 /* OpenCV in Frameworks */ = {isa = PBXBuildFile; productRef = CB0000000000000000000012 /* OpenCV */; };
+		CB0000000000000000000013 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = CB0000000000000000000015 /* PostHog */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CB0000000000000000000010 /* OpenCV in Frameworks */,
+				CB0000000000000000000013 /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = Climb;
 			packageProductDependencies = (
 				CB0000000000000000000012 /* OpenCV */,
+				CB0000000000000000000015 /* PostHog */,
 			);
 			productName = Climb;
 			productReference = CB0000000000000000000005 /* Climb.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				CB0000000000000000000011 /* XCRemoteSwiftPackageReference "opencv-spm" */,
+				CB0000000000000000000014 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CB0000000000000000000003 /* Products */;
@@ -291,6 +295,14 @@
 				version = 4.13.0;
 			};
 		};
+		CB0000000000000000000014 /* XCRemoteSwiftPackageReference "posthog-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/PostHog/posthog-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.58.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -298,6 +310,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = CB0000000000000000000011 /* XCRemoteSwiftPackageReference "opencv-spm" */;
 			productName = OpenCV;
+		};
+		CB0000000000000000000015 /* PostHog */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CB0000000000000000000014 /* XCRemoteSwiftPackageReference "posthog-ios" */;
+			productName = PostHog;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

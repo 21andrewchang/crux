@@ -1,3 +1,4 @@
+import PostHog
 import SwiftUI
 
 /// The check-in, asked the way the onboarding quiz asks things: one question to a
@@ -260,6 +261,8 @@ struct CheckInFlow: View {
     /// is worse than not having it — the questions only mean anything volunteered.
     private func back() {
         if index == 0 {
+            // PostHog: track check-in skip (backed out on the first question)
+            PostHogSDK.shared.capture("check_in_skipped")
             onSkip()
         } else {
             withAnimation(.easeInOut(duration: 0.2)) { index -= 1 }
@@ -267,6 +270,11 @@ struct CheckInFlow: View {
     }
 
     private func finish() {
+        // PostHog: track check-in completion with the readiness score
+        let readiness = CheckIn.readiness(answers)
+        PostHogSDK.shared.capture("check_in_completed", properties: [
+            "readiness_score": readiness as Any,
+        ])
         onFinish(answers)
     }
 }

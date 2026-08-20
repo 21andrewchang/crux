@@ -1,6 +1,7 @@
 import Combine
-import SwiftUI
+import PostHog
 import SwiftData
+import SwiftUI
 import UIKit
 
 /// The note. Type freely; "Start Attempt" drops a recorded go into the document.
@@ -558,6 +559,11 @@ struct SessionDetailView: View {
         attempt.session = session
         session.attempts.append(attempt)
         modelContext.insert(attempt)
+        // PostHog: track new attempt recording
+        PostHogSDK.shared.capture("attempt_recorded", properties: [
+            "attempt_count": session.attempts.count,
+            "duration_seconds": Int(captured.duration),
+        ])
 
         // Notes are typed into the page over the next while, so the sheet closing is
         // what puts them into the document (`closeAttemptSheet`).
@@ -574,6 +580,8 @@ struct SessionDetailView: View {
     /// Held onto first: pulling the row detaches the attempt from the session before
     /// the delete gets a look at it.
     private func discardAttempt(id: UUID) {
+        // PostHog: track attempt deletion
+        PostHogSDK.shared.capture("attempt_deleted")
         let doomed = session.attempt(with: id) ?? detached.first { $0.attempt.id == id }?.attempt
         editorController.removeMarker(for: id)
         detached.removeAll { $0.attempt.id == id }
@@ -631,6 +639,10 @@ struct SessionDetailView: View {
     /// Pop first and delete once the push animation is over: the editor is still bound to
     /// the session on the way out, and laying out against a deleted model traps.
     private func deleteSession() {
+        // PostHog: track session deletion
+        PostHogSDK.shared.capture("session_deleted", properties: [
+            "attempt_count": session.attempts.count,
+        ])
         let session = session
         let context = modelContext
         dismiss()

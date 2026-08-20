@@ -1,4 +1,5 @@
 import AVFoundation
+import PostHog
 import SwiftUI
 
 /// The cold open: three screens of the app before anything is asked of anyone.
@@ -77,6 +78,14 @@ struct IntroView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            // Each slide reports itself as it comes up, so the funnel shows which of
+            // the four is the one people stop tapping on rather than only whether they
+            // reached the end of them.
+            .onChange(of: index, initial: true) { _, page in
+                OnboardingAnalytics.step("intro_\(page + 1)", stage: "intro",
+                                         index: page + 1,
+                                         label: Self.slides[page].headline)
+            }
             // Down to the glass — the pager's own frame only. A page view controller
             // clips its pages, so a slide cannot reach past the box it is handed
             // however loudly it ignores the inset; the box itself has to be the whole
@@ -283,6 +292,10 @@ struct IntroView: View {
 
     private func advance() {
         guard !isLast else {
+            // PostHog: track intro slideshow completion
+            PostHogSDK.shared.capture("onboarding_intro_completed", properties: [
+                "slides_count": Self.slides.count,
+            ])
             onFinish()
             return
         }
@@ -314,13 +327,18 @@ private struct ClipSlide: View {
     /// the words up rather than blinking them off two frames before the video stops.
     private static let words = "caught with bent arms"
 
-    /// The catch, to the second: he swings into frame at two, latches at two and a
-    /// half, and the take runs on for another five and a half after that. Which is
-    /// what a real clip is — a stretch somebody marked out of a video that was longer
-    /// than the thing worth marking, and the reason the words are worth pinning to a
-    /// second rather than to a video. Written down rather than worked out of the
-    /// duration, because it is a moment in the footage and not a fraction of it.
-    private static let clip = ClipMark(start: 2.15, end: 3.6)
+    /// The catch, to the second: he swings into frame at half a second, latches just
+    /// short of one, and the take runs on for another one and a third after that.
+    /// Which is what a real clip is — a stretch somebody marked out of a video that
+    /// was longer than the thing worth marking, and the reason the words are worth
+    /// pinning to a second rather than to a video. Written down rather than worked out
+    /// of the duration, because it is a moment in the footage and not a fraction of it.
+    ///
+    /// The file itself was cut to suit: over a second and a half of camera pan across
+    /// bare wall used to run before any of this, which on a slide that loops is a
+    /// second and a half of nothing every few seconds. What is left opens on him
+    /// arriving — half a beat of run-up, and then the thing the note is about.
+    private static let clip = ClipMark(start: 0.5, end: 1.95)
 
     /// A note is on screen for exactly the stretch its clip covers — that is what a
     /// clip *is*, and the reason the words are worth pinning to a second rather than
@@ -340,7 +358,7 @@ private struct ClipSlide: View {
     @State private var time: TimeInterval = 0
     /// The file's own length, and what the strip is laid out against until it has been
     /// asked for it.
-    @State private var duration: TimeInterval = 5
+    @State private var duration: TimeInterval = 3.32
     @State private var isPlaying = false
     @State private var ticker: Any?
 
@@ -386,7 +404,7 @@ private struct ClipSlide: View {
         .animation(.smooth(duration: 0.3), value: showsNote)
         // The note landing is the moment the whole slide is built around, and it is
         // the one thing on it the phone can say out loud. Not everything the
-        // generator has, though: the clip loops, so this knock comes round every five
+        // generator has, though: the clip loops, so this knock comes round every three
         // seconds, and the full-force one is spent on the last slide's landing, which
         // happens once. Held back to three quarters — the same hit, further off.
         .onChange(of: showsNote) { _, isUp in

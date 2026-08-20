@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PostHog
 import StoreKit
 
 /// The subscription behind the paywall.
@@ -74,7 +75,14 @@ final class Store {
     /// than on the way into it. It only masks the answer — what the App Store actually
     /// says is still asked for and still written down underneath, so turning this off
     /// leaves the real entitlement exactly as it was.
+#if DEBUG
+    // On while working inside the app. Flip to false to walk the wall for real.
     static let forcesPro = true
+    #else
+    // Release — TestFlight and the App Store — can never carry a development switch,
+    // whatever the line above happens to say when a build is cut.
+    static let forcesPro = false
+    #endif
 
     private var storedIsPro = UserDefaults.standard.bool(forKey: Store.proKey) {
         didSet { UserDefaults.standard.set(storedIsPro, forKey: Self.proKey) }
@@ -251,6 +259,25 @@ final class Store {
                 // every launch.
                 await transaction.finish()
                 storedIsPro = true
+                // PostHog: track successful subscription purchase
+                let hasTrial = trial(for: plan) != nil
+                PostHogSDK.shared.capture("subscription_purchased", properties: [
+                    "plan": plan.title.lowercased(),
+                    "product_id": plan.rawValue,
+                    "has_trial": hasTrial,
+                ])
+                // Named for what actually happened, not for the tap. Starting a free
+                // trial and paying today are the same button and completely different
+                // outcomes — one is revenue and one is a promise to look again in a
+                // week — so they are different events rather than one event with a
+                // flag on it that has to be remembered when a chart is built.
+                OnboardingAnalytics.step(
+                    (hasTrial ? "trial_" : "purchased_") + plan.title.lowercased(),
+                    stage: "purchase",
+                    index: 22,
+                    label: hasTrial ? "Started trial (\(plan.title))"
+                                    : "Purchased (\(plan.title))"
+                )
                 return true
             case .userCancelled:
                 return false
@@ -274,7 +301,11 @@ final class Store {
         defer { isPurchasing = false }
         try? await AppStore.sync()
         await refresh()
-        if isPro { return true }
+        if isPro {
+            // PostHog: track successful subscription restore
+            PostHogSDK.shared.capture("subscription_restored")
+            return true
+        }
         failure = "Nothing to restore on this Apple Account."
         return false
     }
