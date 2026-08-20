@@ -17,24 +17,56 @@ import Foundation
 /// actually hands out, it is not muscle soreness, and nothing else here would catch
 /// it. Stress is the one worth adding back first if this ever grows.
 enum CheckIn {
-    /// One question. `options` read left to right the way the answer scales, and
-    /// `quality` runs index-for-index beside them: 1 is the best answer there is, 0
+    /// One question. `options` run best answer first, every question, so the colour
+    /// down the list is always blue at the top and red at the bottom — the shape of a
+    /// question is then something you know before you have read it. `quality` runs
+    /// index-for-index beside them: 1 is the best answer there is, 0
     /// the worst. None of these numbers are measurements — they are a curve someone
     /// chose — but it is the same curve every time, which is the whole of what a score
     /// like this is for: today against your own last month, not against anyone.
     ///
-    /// Five options rather than three. The reason is range: a three-point scale hits
-    /// its own ends inside a fortnight and then reads the same every day, and a score
-    /// that cannot move cannot show you a trend, which is the only thing it is for.
-    /// What five options cost is reading, and that is paid for in the card rather than
-    /// here — only the answer you are on is ever drawn.
+    /// Five options, and the same five everywhere: none, low, medium, high, severe.
+    /// Sleep keeps hours because hours are the one thing on this card you actually
+    /// know, but it is the same five steps underneath.
+    ///
+    /// Every question asks how much of a bad thing you have, which is Hooper's own
+    /// design and not a stylistic choice: all four of its items run 1 "very very low
+    /// or good" to 7 "very very high or bad". This asked for energy instead of fatigue
+    /// for a while, and one item pointing the other way is what made "None" an answer
+    /// that read as terrible on a question where it is the best one there is.
+    ///
+    /// It briefly asked in each question's own words — fine, mild, achy, sore, sharp —
+    /// and the trouble with that is that nobody can tell achy from sore. A scale you
+    /// cannot answer honestly is worse than a coarse one, because it gets answered
+    /// anyway and the noise goes into the score looking like signal. One vocabulary
+    /// across all five means the answer is a level rather than a word to be read
+    /// differently per question.
+    ///
+    /// Five steps rather than Hooper's seven, and rather than the four this had for an
+    /// afternoon. Seven is the 1995 paper's convention and not a psychometric finding —
+    /// four-, five- and seven-point forms come out with much the same reliability, and
+    /// the five-point form is the one people complete most readily and skip least. What
+    /// the step count buys is resolution, `(options - 1) x questions + 1` distinct
+    /// scores: five questions of five is 21 of them, against 13 for four of four. That
+    /// is the whole argument for the extra step — a score that cannot move cannot show
+    /// you a trend, and a trend is the only thing a number like this is for.
     struct Field {
         /// What the answer is filed under afterwards — one word, for the summary.
         let title: String
+        /// The symbol that word travels with, so the four rows can be told apart at a
+        /// glance rather than read one at a time.
+        let icon: String
         /// What the question actually asks, for the screen it gets to itself.
         let prompt: String
         let options: [String]
         let quality: [Double]
+
+        /// How good one answer to this question was, 0–1, or nothing if it was never
+        /// given. What the row it lands on is coloured by: the five steps land one to
+        /// a colour, worst to best, red through green and then blue for the top.
+        func score(for option: Int) -> Double? {
+            quality.indices.contains(option) ? quality[option] : nil
+        }
     }
 
     /// The questions, in the order they are asked and in the order their answers are
@@ -42,58 +74,57 @@ enum CheckIn {
     /// alongside it — see `migrating`.
     static let fields: [Field] = [
         Field(title: "Sleep",
+              icon: "moon.fill",
               prompt: "How long did you sleep?",
-              options: ["<5h", "6h", "7h", "8h", "9h+"],
-              quality: [0.15, 0.60, 0.85, 1.00, 1.00]),
-        Field(title: "Energy",
-              prompt: "How's your energy?",
-              options: ["Low", "Fair", "OK", "Good", "Great"],
-              quality: [0, 0.25, 0.50, 0.75, 1.00]),
+              // The ends are where the evidence is: under six is the night that shows
+              // up as injury risk, and past eight is the extension the sleep studies
+              // measured their gains against. The three in between are just the walk
+              // from one to the other.
+              options: [">8h", "8h", "7h", "6h", "<6h"],
+              quality: [1.00, 0.75, 0.50, 0.25, 0]),
+        Field(title: "Fatigue",
+              icon: "bolt.fill",
+              prompt: "How fatigued are you?",
+              options: ["None", "Low", "Medium", "High", "Severe"],
+              quality: [1.00, 0.75, 0.50, 0.25, 0]),
+        Field(title: "Stress",
+              icon: "cloud.fill",
+              prompt: "How stressed are you?",
+              options: ["None", "Low", "Medium", "High", "Severe"],
+              quality: [1.00, 0.75, 0.50, 0.25, 0]),
         Field(title: "Soreness",
+              icon: "flame.fill",
               prompt: "How sore are you?",
-              options: ["Fresh", "Mild", "Some", "Sore", "Wrecked"],
+              options: ["None", "Low", "Medium", "High", "Severe"],
               quality: [1.00, 0.75, 0.50, 0.25, 0]),
         Field(title: "Fingers",
-              prompt: "How do your fingers feel?",
-              options: ["Fine", "Mild", "Achy", "Sore", "Sharp"],
-              quality: [1.00, 0.80, 0.55, 0.25, 0]),
+              icon: "hand.raised.fill",
+              prompt: "How much finger pain?",
+              options: ["None", "Low", "Medium", "High", "Severe"],
+              quality: [1.00, 0.75, 0.50, 0.25, 0]),
     ]
 
-    /// Every question offers exactly five answers, which is what lets the card lay
-    /// them out as one grid rather than four ragged rows.
-    static let optionCount = 5
-
     /// Where the question that can overrule the score sits in `fields`.
-    static let fingers = 3
+    static let fingers = 4
 
     /// What an unanswered question is stored as.
     static let unanswered = -1
 
     // MARK: - Migration
 
-    /// How many answers a session stored back when the check-in asked six questions:
-    /// sleep, energy, fingers, body, skin, drive.
-    private static let legacyCount = 6
-
-    /// Which of those six each of today's four was, so an old session's answers land
-    /// under the questions they were actually given. Body became Soreness — the same
-    /// question under the name Hooper gives it — and the two that went are skin, which
-    /// is a comfort constraint rather than an injury one, and drive, which turned out
-    /// to be a readout of the other five rather than an input of its own.
-    private static let legacyIndex = [0, 1, 3, 2]
-
-    /// An old session's answers, read under the current questions.
+    /// A stored answer set, read under the current questions.
     ///
-    /// Told apart by count alone, which is enough: six is the only other shape these
-    /// have ever had. A session storing anything else is one the card never finished,
-    /// and it is padded out with blanks rather than guessed at.
+    /// Nothing is carried across from the shapes this had before — the questions, the
+    /// option counts and the direction of one of them all changed, and there is no
+    /// honest way to read an old answer under the new questions. What is left is the
+    /// defensive part: a set of the wrong length is padded or cut to fit, and an index
+    /// past the end of its question comes back unanswered rather than crashing on it.
     static func migrating(_ stored: [Int]) -> [Int] {
-        if stored.count == legacyCount {
-            return legacyIndex.map { stored[$0] }
-        }
         var answers = stored.prefix(fields.count).map { $0 }
         while answers.count < fields.count { answers.append(unanswered) }
-        return answers
+        return zip(answers, fields).map { answer, field in
+            field.options.indices.contains(answer) ? answer : unanswered
+        }
     }
 
     // MARK: - Scoring
@@ -119,7 +150,7 @@ enum CheckIn {
         return Int((total / Double(fields.count) * 100).rounded())
     }
 
-    /// How many of the four have been answered.
+    /// How many of the questions have been answered.
     static func answeredCount(_ answers: [Int]) -> Int {
         zip(fields, answers).filter { field, answer in field.quality.indices.contains(answer) }.count
     }
@@ -180,6 +211,9 @@ enum CheckIn {
         // would otherwise let you conclude. It takes the colour with it: a number
         // drawn green over "no hangboard, no small crimps" is the card arguing with
         // itself, and the colour is the half that gets read first.
+        // The bottom two answers, as it has always been — high and severe. Read it off
+        // the colour if that is easier: an orange finger or a red one stops the
+        // session, a yellow one does not.
         if answers[fingers] >= 3 {
             return Verdict(headline: "Fingers first",
                            advice: "No hangboard, no small crimps. Feet and movement, or take the day.",

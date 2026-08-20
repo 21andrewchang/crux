@@ -225,6 +225,13 @@ struct MeasurePicker: View {
 /// because a generic view can't hold a stored static.
 private let tapeDecay: Double = 0.42
 
+/// How fast the finger has to still be going at the end of a drag for the picker to
+/// carry on without it, in units of predicted overshoot — and how far that drag has to
+/// have covered, in units. Together they are what separates a throw from a placement.
+/// Out here for the same reason `tapeDecay` is.
+private let throwSpeed: Double = 3
+private let throwDistance: Double = 4
+
 /// The dragging itself, which is the same on both pickers however differently they are
 /// drawn: a finger anywhere in the space moves the thing, a whole unit crossed is felt
 /// as well as seen, and let go of mid-throw it keeps running and coasts to a stop — so
@@ -274,9 +281,19 @@ private struct Scrub<Content: View>: View {
                         anchor = nil
                         // What the touch would have carried on to, had it not been let
                         // go of — the system's own read of the throw, in units rather
-                        // than points. Anything under a unit is a nudge, not a flick.
+                        // than points.
                         let thrown = travel(drag.predictedEndTranslation) - travel(drag.translation)
-                        guard abs(thrown) > 1 else { return settle() }
+                        // A throw has to be both: a long way covered and still moving at
+                        // the end of it. Either one on its own is someone lining a number
+                        // up — a short flick with the wrist, or a long drag that was
+                        // slowed to a stop on the number they wanted — and both of those
+                        // want the picker to stay exactly where it was let go of. Coming
+                        // off a number you were holding and having it slide two more is
+                        // the picker arguing with you.
+                        guard abs(thrown) > throwSpeed,
+                              abs(travel(drag.translation)) > throwDistance else {
+                            return settle()
+                        }
                         coast(from: thrown / tapeDecay)
                     }
             )
@@ -486,10 +503,10 @@ private struct Ladder: View {
                         .font(.system(size: 80, weight: .heavy))
                         .tracking(-1.5)
                         .monospacedDigit()
-                        // Each rung in its tier's colour, so scrubbing the ladder runs
-                        // through the same green-to-purple the profile reads back in —
-                        // and the grade you stop on is already the colour it will be.
-                        .foregroundStyle(GradeTier.of(Double(rung)).color)
+                        // Each rung in its rank's metal, so scrubbing the ladder runs
+                        // bronze to purple and the grade you stop on is already set the
+                        // way the profile will hand it back to you.
+                        .foregroundStyle(.metal(GradeTier.of(Double(rung)).color))
                         .scaleEffect(1 - Self.shrink * min(abs(delta), 1))
                         .opacity(1 / (1 + Self.falloff * abs(delta)))
                         // Up the screen is up the ladder, so a rung harder than the

@@ -8,8 +8,8 @@
     "_failTransactionsEnabled": false,
     "_lastSynchronizedDate": 0,
     "_locale": "en_US",
-    "_storefront": "USA",
-    "_storeKitErrors": []
+    "_storeKitErrors": [],
+    "_storefront": "USA"
   },
   "subscriptionGroups": [
     {
@@ -25,14 +25,16 @@
           "groupNumber": 1,
           "internalID": "30000001",
           "introductoryOffer": {
+            "displayPrice": "0.00",
             "internalID": "40000001",
+            "numberOfPeriods": 1,
             "paymentMode": "free",
             "subscriptionPeriod": "P3D"
           },
           "localizations": [
             {
               "description": "Every session, every attempt, every send.",
-              "displayName": "Crux Pro \u2014 Yearly",
+              "displayName": "Crux Pro — Yearly",
               "locale": "en_US"
             }
           ],
@@ -46,7 +48,7 @@
         {
           "adHocOffers": [],
           "codeOffers": [],
-          "displayPrice": "4.99",
+          "displayPrice": "9.99",
           "familyShareable": false,
           "groupNumber": 1,
           "internalID": "30000002",
@@ -54,7 +56,7 @@
           "localizations": [
             {
               "description": "Every session, every attempt, every send.",
-              "displayName": "Crux Pro \u2014 Monthly",
+              "displayName": "Crux Pro — Monthly",
               "locale": "en_US"
             }
           ],

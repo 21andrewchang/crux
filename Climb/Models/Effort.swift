@@ -16,7 +16,7 @@ enum Effort: Int, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .easy: "Easy"
-        case .medium: "Medium"
+        case .medium: "Med"
         case .hard: "Hard"
         case .limit: "Limit"
         }

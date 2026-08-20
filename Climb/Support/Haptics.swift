@@ -42,3 +42,16 @@ enum Haptics {
         selector.prepare()
     }
 }
+
+extension Haptics {
+    /// The session being called. Heavier than anything else in the app on purpose:
+    /// ending a session is the one thing here that closes something, and it happens
+    /// once a visit — a knock you feel through the phone in a chalk bag is the whole
+    /// confirmation, since nobody is watching the screen when they press it.
+    static func sessionEnded() {
+        let notice = UINotificationFeedbackGenerator()
+        notice.prepare()
+        notice.notificationOccurred(.success)
+    }
+}
+

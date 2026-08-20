@@ -98,6 +98,13 @@ struct ProfileView: View {
     /// in the reveal are all still here, just not on.
     private static let showsInfo = false
 
+    /// Whether Continue starts the whole run over from the first question rather than
+    /// buying anything. On while onboarding is what is being worked on — walking the
+    /// flow end to end is the only way to see it, and it shouldn't cost a relaunch.
+    /// It puts back only where you are in the flow: whatever the last pass left in the
+    /// practice note is still there at the start of the next.
+    private static let restartsForDevelopment = true
+
     var onFinish: () -> Void
 
     @State private var onboarding = Onboarding.shared
@@ -113,9 +120,13 @@ struct ProfileView: View {
     /// Whether the whole thing has played out — the dream included. Until it has, a
     /// tap does nothing: there is no skipping to the end of a screen this short.
     @State private var finished = false
-    /// Whether the chart has been carried up to the top of the screen, which is what
-    /// opens the space the other two land in.
-    @State private var moved = false
+    /// How far through the screen's three placings it is: 0 the chart on its own in
+    /// the middle, 1 the chart and the grades centred as a block, 2 the block at the
+    /// top with the chart a size down and the price under it.
+    @State private var stage = 0
+    /// How tall the grades are, measured rather than guessed, so centring the block
+    /// they are half of is exact at whatever size the numbers came out.
+    @State private var gradesHeight: CGFloat = 140
     /// The height of the column, so the chart's starting place can be the middle of the
     /// screen measured rather than guessed at.
     @State private var columnHeight: CGFloat = 800
@@ -134,17 +145,37 @@ struct ProfileView: View {
     /// Which of the two beats is up: the profile on its own, or the profile against the
     /// one your goal grade would need. Continue is what moves between them.
     @State private var slide = 0
+    /// How far the grade already on screen is thrown off its place by the shudder, in
+    /// points. Nothing at rest; a few points either side of nothing while the screen is
+    /// working up to what it is about to say.
+    @State private var shake: CGFloat = 0
     /// The dream shape's corners. Empty until the second beat, when it opens out of the
     /// middle of the same chart — even all the way round, because a goal grade is not a
     /// shape you have to guess at: it is what all six of these have to reach.
     @State private var dreamReaches: [Double] = []
+    /// Which plan the footer has selected. It lives here rather than in the footer so
+    /// the screen owns the choice, the same way the paywall does.
+    @State private var plan: Store.Plan = .yearly
 
     private var answers: [String: String] { onboarding.answers }
 
-    /// How far down the chart sits before it is moved: the drop from its place at the
-    /// top of the column to the middle of the screen.
-    private var centering: CGFloat {
-        max(0, columnHeight / 2 - (Self.chartHeight / 2 + 8))
+    /// The line over the plans. It says nothing about the trial, because the row under
+    /// it already does and the button under that says it a third time; what it is for
+    /// is the one thing neither of them says — that what is being bought is the tool,
+    /// and not the grade the chart just gave you.
+    private static let headline = "Unlock Crux to start improving"
+
+    /// Where the chart-and-grades block sits, as a drop from the top of the column.
+    ///
+    /// Centred on the chart alone while the chart is all there is to look at, then
+    /// centred on the pair once the grade is under it — which is the small rise the
+    /// grade's arrival is paid for with — and flush to the top once the price is due.
+    private var blockOffset: CGFloat {
+        switch stage {
+        case 0: max(0, (columnHeight - Self.chartHeight) / 2 - 8)
+        case 1: max(0, (columnHeight - Self.chartHeight - gradesHeight) / 2 - 8)
+        default: 0
+        }
     }
 
     var body: some View {
@@ -152,45 +183,70 @@ struct ProfileView: View {
         // then what it was read out of under it, and the grade last of all at the
         // bottom — which is the order the three of them were arrived at.
         VStack(spacing: 0) {
-            chart
-                .padding(.top, 8)
-                // Drawn in the middle of the screen to start with, where there is
-                // nothing else, and carried up to the top once the shape is finished —
-                // the move is what opens the room the profile and the grade land in,
-                // rather than the two of them appearing around something that never
-                // moved.
-                .offset(y: moved ? 0 : centering)
+            // The chart and the grades under it travel together. On the first beat the
+            // chart alone is centred, with the grades' room already held below it and
+            // empty; when the grade arrives the pair centres as one, which is a small
+            // rise rather than a jump; and only when the price is due does the block go
+            // to the top and the chart take a size down with it.
+            VStack(spacing: 0) {
+                chart
+                    .padding(.top, 8)
+                    // The labels come down with the rings because the whole chart is
+                    // scaled rather than redrawn smaller.
+                    .scaleEffect(stage >= 2 ? Self.movedScale : 1, anchor: .top)
+                    // What the scaling leaves behind at the bottom, given back to the
+                    // column: a view scaled down still lays out at its full height.
+                    .padding(.bottom, stage >= 2 ? -Self.chartHeight * (1 - Self.movedScale) : 0)
 
-            if Self.showsInfo {
-                info
-                    .padding(.top, 24)
-                    .opacity(infoIn ? 1 : 0)
-                    .offset(y: infoIn ? 0 : 12)
+                if Self.showsInfo {
+                    info
+                        .padding(.top, 24)
+                        .opacity(infoIn ? 1 : 0)
+                        .offset(y: infoIn ? 0 : 12)
+                }
+
+                grades
+                    // Tucked up under the chart rather than set below it: the labels
+                    // around the rings leave a margin of their own, and the gap read as
+                    // a gap on top of that.
+                    .padding(.top, -12)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        gradesHeight = $0
+                    }
             }
+            .offset(y: blockOffset)
 
-            grades
-                .padding(.top, 4)
+            Spacer(minLength: 8)
 
-            Spacer(minLength: 16)
-
-            // The way out, said once and quietly, and only once there is somewhere to
-            // go. It sits on its own at the bottom rather than under the grade, so the
-            // grade keeps the company of the profile it came out of.
-            Text("Tap to continue")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.35))
+            // The one sentence on the screen, and it is about the tool rather than the
+            // grade. Two enormous numbers sat straight on top of a price implies the
+            // price is what moves you from one to the other; naming what is actually
+            // being bought — the record, and getting there quicker for having kept it —
+            // is both the honest framing and the one that sells.
+            Text(Self.headline)
+                .font(.system(size: 21, weight: .semibold))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 20)
                 .opacity(finished ? 1 : 0)
-                .animation(.easeInOut(duration: 0.5), value: finished)
-                .padding(.bottom, 8)
+                .animation(.easeInOut(duration: 0.45), value: finished)
+
+            // The asking, on the same screen as the thing being asked for. It arrives
+            // last, under a gap that has just been drawn twice over — once as a shape
+            // and once as two numbers — so the price is read against that rather than
+            // against a page break. Nothing is written over it: a line of copy between
+            // the grades and the plans was saying what the chart had just said better.
+            PurchaseFooter(plan: $plan, onPurchase: onFinish,
+                           replay: Self.restartsForDevelopment ? onboarding.reset : nil)
+                .opacity(finished ? 1 : 0)
+                .offset(y: finished ? 0 : 16)
+                .animation(.spring(response: 0.6, dampingFraction: 0.88), value: finished)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { columnHeight = $0 }
-        // No button. The screen plays itself — the shape, the profile, the grade, and
-        // then the grade you're after — and once it has finished playing a tap anywhere
-        // takes it. A button under all of this would have been asking for a decision
-        // where there isn't one.
-        .contentShape(.rect)
-        .onTapGesture { if finished { onFinish() } }
-        .foregroundStyle(.white)
+        // Nothing to tap through: the screen plays itself, and what is under it when it
+        // has finished playing is the one decision on it.
+        .foregroundStyle(Color.paper)
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -214,13 +270,22 @@ struct ProfileView: View {
 
             ZStack {
                 rings(radius: radius)
-                // Behind the profile, because it is the bigger of the two and the one
-                // that hasn't happened yet — and drawn back a little, so what you climb
-                // stays the solid thing on the chart and what you're after reads as the
-                // shape it hasn't been filled into.
-                shape(radius: radius, reaches: dreamReaches, tint: dreamTint)
-                    .opacity(dreamIn ? 0.4 : 0)
+                // Behind the profile, because it is the bigger of the two and encloses
+                // it — but drawn at full strength, because it is the one the screen is
+                // about. Its outline carries a small glow that rises and falls on a slow
+                // count: enough that the eye keeps coming back to it, not so much that
+                // the chart is a light show.
+                TimelineView(.animation) { timeline in
+                    shape(radius: radius, reaches: dreamReaches, tint: dreamTint,
+                          glow: Self.pulse(at: timeline.date))
+                }
+                .opacity(dreamIn ? 1 : 0)
+                // And the profile taken back the moment the goal is up. On its own it is
+                // the only shape on the chart and is drawn like it; next to what it is
+                // being read against it is the smaller, dimmer of the two, which is the
+                // whole point being made.
                 shape(radius: radius, reaches: reaches, tint: tint)
+                    .opacity(dreamIn ? 0.45 : 1)
                 labels(radius: radius, center: center)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -228,62 +293,174 @@ struct ProfileView: View {
         .frame(height: Self.chartHeight)
     }
 
-    /// How tall the chart's box is, wherever on the screen it currently sits.
+    /// How tall the chart's box is — one size for the whole screen, whatever else is on
+    /// it. It was shrinking to make room for the plans, and a chart that resizes under
+    /// you reads as the screen giving way rather than as room being made: better to
+    /// draw it at the size it will end up at and leave it there.
     private static let chartHeight: CGFloat = 320
+
+    /// How much of itself the chart keeps once it is up at the top. One, as it turns
+    /// out: with the price sat on the bottom of the screen rather than floating above
+    /// its own empty strip, the room was already there — and a chart that shrinks to
+    /// make room it didn't need is a chart that flinches. Kept as a number rather than
+    /// taken out, because it is the first thing to reach for on a shorter phone.
+    private static let movedScale: CGFloat = 1
 
     /// What the shapes come to, in grades. On its own the number is the size it is
     /// because it is the only writing on the screen; once the dream is up it steps down
     /// to make room for the one it is being read against.
     private var grades: some View {
         HStack(spacing: 16) {
-            grade(grade(for: "grade"), tint: tint)
+            grade(grade(for: "grade"), tint: tint, dim: true)
                 // Last of all, and on the same spring the corners land on, so it reads
                 // as the seventh beat of the same reveal rather than as a caption.
                 .scaleEffect(gradeIn ? 1 : 0.6)
                 .opacity(gradeIn ? 1 : 0)
+                // And then it starts to go. The shudder is on this number alone —
+                // nothing else on the screen moves — so what is coming reads as
+                // something happening to it rather than to the phone.
+                .offset(x: shake)
             // Taken into the row before it can be seen: the space it needs is what
             // carries the grade already there over to the left, and only once that has
-            // happened does the goal itself turn up in it. Neither number ever changes
-            // size — what you climb doesn't get smaller because you said what you're
-            // after.
+            // happened does the goal itself turn up in it.
             if slide == 1 {
                 // Between the two, so the pair reads as a distance rather than as two
                 // facts stood next to each other. Faint, and much smaller than what it
                 // joins: it is punctuation, not a third thing on the line.
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.3))
+                //
+                // Drawn rather than set. Both the SF Symbol and the font's own arrow
+                // glyph round their ends and their point, and that softness next to two
+                // heavy, flat-cut numbers reads as a second typeface on the line.
+                SharpArrow()
+                    .stroke(Color.paper.opacity(0.3),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .butt,
+                                               lineJoin: .miter, miterLimit: 12))
+                    .frame(width: 30, height: 18)
                     .opacity(goalIn ? 1 : 0)
                     // Put into the row with no transition of its own: the fade is the
                     // one above, and SwiftUI's default insert fading underneath it was
                     // the hitch on the way in.
                     .transition(.identity)
-                grade(grade(for: "goalGrade"), tint: dreamTint)
+                grade(grade(for: "goalGrade"), tint: dreamTint, shining: true)
                     .scaleEffect(goalIn ? 1 : 0.7)
                     .opacity(goalIn ? 1 : 0)
                     .transition(.identity)
             }
         }
+        // The row is as tall as the taller number from the start, whether or not that
+        // number is in it yet. Without it the row grew when the goal arrived and the
+        // grade already there was re-centred in the new height — so what should have
+        // been a step to the left was a step down and to the left.
+        .frame(height: gradeSize * 1.24)
     }
 
     /// Heavy, tight, and the system face rather than the rounded one — a grade is a
     /// hard number and the soft face was reading as a toy. The negative tracking is what
     /// keeps two characters at this size looking set rather than spaced.
-    private func grade(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.system(size: gradeSize, weight: .heavy))
+    ///
+    /// The two of them are not drawn the same way, because they are not the same kind of
+    /// fact. What you climb now is set smaller and duller — it is the thing being left
+    /// behind, and it should look like it. What you're after is the size it is and lit
+    /// besides: a band of light crosses it, over and over.
+    private func grade(_ text: String, tint: Color,
+                       dim: Bool = false, shining: Bool = false) -> some View {
+        let label = Text(text)
+            .font(.system(size: dim ? gradeSize * 0.7 : gradeSize, weight: .heavy))
             .tracking(-2)
+        return label
             // Shaded rather than plated: the colour itself at the top, a little of it
             // taken away by the bottom. The chrome ramp that was here first — highlight,
             // shadow, second highlight — read as a sticker, which is what happens when
             // type at this size pretends to be metal.
-            .foregroundStyle(Self.shaded(tint))
+            .foregroundStyle(.metal(dim ? tint.mix(with: .black, by: 0.45) : tint))
+            .overlay { if shining { sheen(label) } }
             // One soft shadow under it, black rather than coloured, so the number sits
             // above the screen instead of glowing on it.
             .shadow(color: .black.opacity(0.6), radius: 16, y: 8)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
     }
+
+    /// The sweep across the goal grade: a slanted band of light that crosses it and
+    /// comes round again. Masked to the glyphs, so what shines is the number rather than
+    /// a strip of light passing over the screen behind it.
+    ///
+    /// Slanted, faint, and soft at both edges — the three things that separate a sheen
+    /// from a highlighter. A band with hard sides at full strength doesn't read as light
+    /// on a surface, it reads as a white rectangle sliding past.
+    ///
+    /// Driven off the clock rather than off a repeating animation started on appear:
+    /// this number arrives in the middle of two other animations, and a `repeatForever`
+    /// kicked off inside that was landing on its end value with nothing in between —
+    /// which is a sheen that never crosses.
+    private func sheen(_ label: Text) -> some View {
+        TimelineView(.animation) { timeline in
+            let seconds = timeline.date.timeIntervalSinceReferenceDate
+            let travel = Self.sheenTravel(at: seconds)
+            GeometryReader { geometry in
+                let size = geometry.size
+                LinearGradient(stops: [.init(color: .clear, location: 0),
+                                       .init(color: Color.paper.opacity(0.03), location: 0.3),
+                                       .init(color: Color.paper.opacity(0.22), location: 0.5),
+                                       .init(color: Color.paper.opacity(0.03), location: 0.7),
+                                       .init(color: .clear, location: 1)],
+                               startPoint: .leading, endPoint: .trailing)
+                    // Wider than the number, not narrower: a band you can see the ends
+                    // of is a bar sliding past, however soft its edges are. At close to
+                    // twice the width there are no ends to see — what crosses the glyphs
+                    // is the bright middle of the gradient and nothing else. Taller than
+                    // the number too, and turned off the vertical, so the light meets it
+                    // at an angle and still covers it at both ends of the turn.
+                    .frame(width: size.width * 1.9, height: size.height * 2.6)
+                    .rotationEffect(.degrees(20))
+                    .offset(x: travel * size.width)
+                    .frame(width: size.width, height: size.height)
+                    .blendMode(.plusLighter)
+            }
+        }
+        .mask(label)
+        .allowsHitTesting(false)
+    }
+
+    /// The breath the goal shape's glow is on, as a number between nothing and full.
+    /// A cosine rather than a sawtooth, so it swells and settles instead of snapping
+    /// back to dark at the end of every count.
+    private static func pulse(at date: Date) -> Double {
+        let phase = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: pulseCycle) / pulseCycle
+        return 0.5 - cos(phase * 2 * .pi) / 2
+    }
+
+    /// How long that breath takes. Slow — a pulse you can count is a heartbeat, and a
+    /// pulse you can't is a flicker.
+    private static let pulseCycle: Double = 2.2
+
+    /// Where the sheen is, as a share of the number's width either side of it.
+    ///
+    /// Not a constant speed. A stripe crossing at one rate is a stripe; light glancing
+    /// off something is slowest at the edges of the turn and quickest through the middle
+    /// of it, which is what the quintic ease here does — it is at its fastest exactly
+    /// where it is over the glyphs. And the sweep is only the first part of the count:
+    /// the rest of it is spent parked off the far side, so what you see is a thing that
+    /// goes past rather than a thing that is always going past.
+    private static func sheenTravel(at seconds: Double) -> Double {
+        let phase = seconds.truncatingRemainder(dividingBy: sheenCycle) / sheenCycle
+        guard phase < sheenCrossing else { return sheenReach }
+        let step = phase / sheenCrossing
+        let eased = step * step * step * (step * (step * 6 - 15) + 10)
+        return (eased * 2 - 1) * sheenReach
+    }
+
+    /// How long the whole count takes, sweep and wait together.
+    private static let sheenCycle: Double = 1.6
+
+    /// How much of that count the sweep itself gets. The rest is the wait.
+    private static let sheenCrossing: Double = 0.58
+
+    /// How far past the number each end of the sweep sits, as a share of its width —
+    /// far enough that the bright middle of the band is clear of the glyphs before it
+    /// stops, which takes more room now the band itself is wider than they are.
+    private static let sheenReach: Double = 1.5
 
     /// One size for both grades, picked off the longer of the two and picked before
     /// either is on screen — so a V5 next to a V11 is set at the V11's size rather than
@@ -292,15 +469,6 @@ struct ProfileView: View {
     /// size was what made the pair look like two different fonts.
     private var gradeSize: CGFloat {
         max(grade(for: "grade").count, grade(for: "goalGrade").count) > 2 ? 84 : 116
-    }
-
-    /// The shading: the tier's colour, lifted a touch at the top and let down at the
-    /// bottom. Two stops and a small range — enough that the glyph has a direction to
-    /// it, not enough to be a second colour.
-    private static func shaded(_ tint: Color) -> LinearGradient {
-        LinearGradient(colors: [tint.mix(with: .white, by: 0.14),
-                                tint.mix(with: .black, by: 0.24)],
-                       startPoint: .top, endPoint: .bottom)
     }
 
     /// How much room outside the rings the axis labels need — two lines of text either
@@ -315,14 +483,14 @@ struct ProfileView: View {
             ForEach(1...Self.bands.count, id: \.self) { ring in
                 let outermost = ring == Self.bands.count
                 Hexagon(fraction: Double(ring) / Double(Self.bands.count))
-                    .stroke(Color.white.opacity(outermost ? 0.22 : 0.11),
+                    .stroke(Color.paper.opacity(outermost ? 0.22 : 0.11),
                             lineWidth: outermost ? 1.5 : 1)
                     .frame(width: radius * 2, height: radius * 2)
             }
             // The spokes, drawn faintly enough to guide the eye to a label without
             // turning the middle of the chart into a star.
             Spokes()
-                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                .stroke(Color.paper.opacity(0.07), lineWidth: 1)
                 .frame(width: radius * 2, height: radius * 2)
         }
         .opacity(chartIn ? 1 : 0)
@@ -350,13 +518,27 @@ struct ProfileView: View {
     /// path being scaled up: a shape that grows uniformly says nothing about the six
     /// things it is made of, and this screen's whole job is that it is made of six
     /// things.
-    private func shape(radius: CGFloat, reaches: [Double], tint: Color) -> some View {
+    private func shape(radius: CGFloat, reaches: [Double], tint: Color,
+                       glow: Double = 0) -> some View {
         Radar(reaches: AnimatableVector(reaches))
             .fill(LinearGradient(colors: [tint.opacity(0.42), tint.opacity(0.16)],
                                  startPoint: .top, endPoint: .bottom))
             .overlay {
-                Radar(reaches: AnimatableVector(reaches))
-                    .stroke(tint, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                ZStack {
+                    if glow > 0 {
+                        // The glow: the same line again, laid down thicker, blurred, and
+                        // kept faint — a shadow in the shape's own colour rather than a
+                        // second edge. It is under the real line and nothing else, so
+                        // what rises and falls is the light off the outline and not the
+                        // whole chart swelling.
+                        Radar(reaches: AnimatableVector(reaches))
+                            .stroke(tint, style: StrokeStyle(lineWidth: 6, lineJoin: .round))
+                            .blur(radius: 7 + 4 * glow)
+                            .opacity(0.3 + 0.3 * glow)
+                    }
+                    Radar(reaches: AnimatableVector(reaches))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                }
             }
             .frame(width: radius * 2, height: radius * 2)
             .opacity(chartIn ? 1 : 0)
@@ -382,7 +564,7 @@ struct ProfileView: View {
                 Text(pillar.name.uppercased())
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.8)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(Color.paper.opacity(0.5))
                 Text(band(at: index))
                     .font(.system(size: 15, weight: .bold))
             }
@@ -417,7 +599,7 @@ struct ProfileView: View {
                 Text("Profile")
                     .font(.footnote.weight(.semibold))
             }
-            .foregroundStyle(.white.opacity(0.4))
+            .foregroundStyle(Color.paper.opacity(0.4))
 
             HStack(alignment: .top, spacing: 16) {
                 column(Array(stats.prefix(half)))
@@ -440,7 +622,7 @@ struct ProfileView: View {
                 // the longest answer here is "One arm, easily", and a line that scaled
                 // itself to fit was setting half the card in a different size from the
                 // other half.
-                (Text("\(stat.label): ").foregroundStyle(.white.opacity(0.4))
+                (Text("\(stat.label): ").foregroundStyle(Color.paper.opacity(0.4))
                     + Text(stat.value).fontWeight(.semibold))
                     .font(.footnote)
                     .lineLimit(1)
@@ -687,6 +869,29 @@ struct ProfileView: View {
     /// screen is only worth having if each of them is read.
     private static let cadence: Double = 0.48
 
+    /// The number already on screen, coming apart at the seams. A dozen quick throws
+    /// either side of its place, each one further than the last and each with a knock
+    /// under the finger, so the screen is plainly winding up to something by the time it
+    /// happens.
+    ///
+    /// The knocks ramp in strength along with the throws. A rumble at one level is a
+    /// phone buzzing; a rumble that is getting worse is a warning.
+    private func shudder() async {
+        let rumble = UIImpactFeedbackGenerator(style: .soft)
+        rumble.prepare()
+        let steps = 12
+        for step in 0..<steps {
+            let share = Double(step) / Double(steps - 1)
+            withAnimation(.linear(duration: 0.042)) {
+                shake = (step.isMultiple(of: 2) ? -1 : 1) * (1.5 + 7 * share)
+            }
+            rumble.impactOccurred(intensity: 0.25 + 0.6 * share)
+            try? await Task.sleep(for: .milliseconds(42))
+            if Task.isCancelled { return }
+        }
+        withAnimation(.linear(duration: 0.04)) { shake = 0 }
+    }
+
     /// Continue, twice over: the first press brings the dream up beside the profile,
     /// the second leaves the screen. One button rather than two, because the second
     /// chart is the rest of this screen and not the next one.
@@ -700,21 +905,26 @@ struct ProfileView: View {
         // to be a shape the whole way; this one arrives all at once and shouldn't
         // announce its six sides before it has any.
         dreamReaches = Array(repeating: Self.dot, count: Self.pillars.count)
-        // First the room, which moves the grade already on screen over to the left.
-        withAnimation(.spring(response: 0.52, dampingFraction: 0.88)) { slide = 1 }
+        // The hit the shudder was building to, and the number is thrown off the middle
+        // of the screen by it. Heavy at full strength — the one time the phone is asked
+        // for everything it has — and the spring is quick and loose so the grade is
+        // knocked left rather than carried there.
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1)
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.68)) { slide = 1 }
         Task { @MainActor in
             let tap = UIImpactFeedbackGenerator(style: .rigid)
             tap.prepare()
-            // Then the number that room was made for.
-            try? await Task.sleep(for: .milliseconds(380))
+            // Then the number that room was made for — and with it, in the middle of
+            // the chart, the dot it is about to open out of. They arrive together
+            // because they are the same thing said twice: the grade, and the shape it
+            // asks for.
+            try? await Task.sleep(for: .milliseconds(200))
             withAnimation(.spring(response: 0.44, dampingFraction: 0.78)) { goalIn = true }
+            withAnimation(.easeOut(duration: 0.2)) { dreamIn = true }
             tap.impactOccurred()
             tap.prepare()
-            // The dot, put down in the middle of the chart on its own.
+            // And then what the dot opens into, behind the shape already there.
             try? await Task.sleep(for: .milliseconds(320))
-            withAnimation(.easeOut(duration: 0.2)) { dreamIn = true }
-            // And then what it opens into, behind the shape already there.
-            try? await Task.sleep(for: .milliseconds(220))
             // Every corner at once, unlike the profile's: the dream isn't six things
             // being said, it's one — this, evenly, all the way round.
             withAnimation(.spring(response: 0.75, dampingFraction: 0.78)) {
@@ -722,7 +932,12 @@ struct ProfileView: View {
                                      count: Self.pillars.count)
             }
             tap.impactOccurred()
-            try? await Task.sleep(for: .milliseconds(500))
+
+            // The gap is drawn and read; now the block gives up the middle of the
+            // screen, and what it makes room for is the only thing left to do here.
+            try? await Task.sleep(for: .milliseconds(700))
+            withAnimation(.spring(response: 0.62, dampingFraction: 0.9)) { stage = 2 }
+            try? await Task.sleep(for: .milliseconds(220))
             finished = true
         }
     }
@@ -753,7 +968,9 @@ struct ProfileView: View {
 
         try? await Task.sleep(for: .milliseconds(320))
         if Task.isCancelled { return }
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.86)) { moved = true }
+        // Up by half the height of what is about to appear under it — the chart stays
+        // full size, and the pair ends up centred where the chart alone just was.
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.86)) { stage = 1 }
 
         if Self.showsInfo {
             try? await Task.sleep(for: .milliseconds(280))
@@ -766,10 +983,12 @@ struct ProfileView: View {
         withAnimation(.spring(response: 0.46, dampingFraction: 0.66)) { gradeIn = true }
         tap.impactOccurred()
 
-        // Long enough to read what you climb, and no longer: the second beat is the
-        // point of the screen and waiting on a tap for it would have most people
-        // leaving before it happened.
-        try? await Task.sleep(for: .seconds(1))
+        // Long enough to read what you climb, and no longer — then the number starts
+        // to shake, which is the screen saying this isn't the end of it before a word
+        // of it has been read.
+        try? await Task.sleep(for: .milliseconds(650))
+        if Task.isCancelled { return }
+        await shudder()
         if Task.isCancelled { return }
         next()
     }
@@ -816,6 +1035,27 @@ struct AnimatableVector: VectorArithmetic {
 // MARK: - Shapes
 
 /// One ring of the ladder, at `fraction` of the way out.
+/// The arrow between the two grades: three straight strokes, butt-cut at every end and
+/// mitred at the point. Nothing here is a curve, which is the whole reason it exists —
+/// the drawn arrows in the system face are rounded off at the tip and the tails, and at
+/// this size, beside type that is cut flat, that reads as soft rather than as neutral.
+private struct SharpArrow: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let mid = rect.midY
+        // The head is as deep as it is tall, so the two barbs meet the shaft at right
+        // angles to each other — the plainest arrowhead there is, and the one that keeps
+        // its point once the stroke is mitred.
+        let head = rect.height / 2
+        path.move(to: CGPoint(x: rect.minX, y: mid))
+        path.addLine(to: CGPoint(x: rect.maxX, y: mid))
+        path.move(to: CGPoint(x: rect.maxX - head, y: mid - head))
+        path.addLine(to: CGPoint(x: rect.maxX, y: mid))
+        path.addLine(to: CGPoint(x: rect.maxX - head, y: mid + head))
+        return path
+    }
+}
+
 private struct Hexagon: Shape {
     var fraction: Double
 

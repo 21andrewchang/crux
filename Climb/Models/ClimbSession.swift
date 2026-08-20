@@ -48,6 +48,17 @@ final class ClimbSession {
     /// while this asked six.
     var checkInAnswers: [Int] = []
 
+    /// When the session actually began: stamped the moment the check-in is done with,
+    /// answered or skipped, because that is the moment somebody is standing at the
+    /// wall. `createdAt` is when the note was made, which is the same second today and
+    /// is not for a session written up afterwards — so the clock hangs off this one.
+    /// Nil for every note written before there was a clock.
+    var startedAt: Date?
+
+    /// When it was called. Nil while the session is still running, which is what the
+    /// review page reads to decide whether the duration it shows is still moving.
+    var endedAt: Date?
+
     @Relationship(deleteRule: .cascade, inverse: \Attempt.session)
     var attempts: [Attempt] = []
 
@@ -57,6 +68,55 @@ final class ClimbSession {
         self.updatedAt = createdAt
         // Nothing to lift out of a note that starts empty.
         self.didSplitTitle = true
+    }
+
+    /// How long the session has run, as of now.
+    ///
+    /// Falls back to `createdAt` for a note whose clock never started — every session
+    /// written before the clock existed, and any opened straight from the list rather
+    /// than through the check-in. The note being made is the closest thing those have
+    /// to a start, and it is a great deal closer to the truth than a dash.
+    func duration(asOf now: Date = Date()) -> TimeInterval {
+        max(0, (endedAt ?? now).timeIntervalSince(startedAt ?? createdAt))
+    }
+
+    /// Starts the clock, once. Reopening the check-in to change an answer must not
+    /// restart a session that has been running for an hour.
+    func startIfNeeded(at date: Date = Date()) {
+        guard startedAt == nil else { return }
+        startedAt = date
+    }
+
+    /// The climbs this session worked, by name.
+    ///
+    /// Read off the document rather than off `Attempt.climb`, because in a note written
+    /// today a climb *is* a heading and nothing else: pressing the climb button writes a
+    /// line, and the attempts under it are filed there by where they sit, not by a
+    /// relationship. `Attempt.climb` is only ever set for a climb dropped in from the
+    /// library, so counting it counted almost nothing.
+    ///
+    /// Named headings only — a heading pressed and not yet typed into is a climb nobody
+    /// has named, and counting it would have the number tick up on a button press. The
+    /// same name twice is one climb, whichever page it was written on: coming back to a
+    /// problem later in the session is another go at it, not another problem.
+    var climbNames: [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+        for tab in NoteTab.allCases {
+            for line in text(for: tab).components(separatedBy: "\n") {
+                guard line.hasPrefix(NoteDocument.headingMarker) else { continue }
+                let name = NoteDocument.headingName(String(line.dropFirst())
+                    .replacingOccurrences(of: NoteDocument.attachmentMarker, with: ""))
+                guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
+                names.append(name)
+            }
+        }
+        // A note from before headings carried its climbs as a relationship instead.
+        for climb in attempts.compactMap(\.climb)
+        where seen.insert(climb.name.lowercased()).inserted && !climb.name.isEmpty {
+            names.append(climb.name)
+        }
+        return names
     }
 
     /// Attempts in the order they were recorded — the order their numbering follows.

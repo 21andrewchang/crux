@@ -1,5 +1,7 @@
 import AVKit
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// What the flow hands back the moment a recording lands — the attempt is saved
 /// there and then, not on a button.
@@ -39,6 +41,12 @@ struct AttemptFlowView: View {
 
     @StateObject private var capture = CaptureController()
     @State private var phase: Phase = .capture
+    @State private var showingLibrary = false
+    /// How far the Photos import has got, nil when nothing is being imported.
+    /// It is the honest number: an iCloud download reports through it too.
+    @State private var importProgress: Double?
+    /// The import in flight, kept so Cancel can actually stop it.
+    @State private var importJob: Progress?
 
     var body: some View {
         ZStack {
@@ -47,7 +55,7 @@ struct AttemptFlowView: View {
                 captureScreen
             case .processing:
                 Color.black.ignoresSafeArea()
-                ProgressView().controlSize(.large).tint(.white)
+                processingScreen
             case .review:
                 // The same page an attempt opens to from the note, over the attempt
                 // that was just saved — plus the controls that only a fresh take has.
@@ -112,7 +120,7 @@ struct AttemptFlowView: View {
                     zoomPicker
                         .padding(.bottom, 22)
                 }
-                recordButton
+                bottomControls
                     .padding(.bottom, 32)
             }
         }
@@ -172,6 +180,79 @@ struct AttemptFlowView: View {
         // Matches AttemptTopBar's top padding so capture, review, and replay all
         // hang the bar at the same height.
         .padding(.top, 14)
+    }
+
+    /// The shutter, with the Photos import sitting where Camera keeps its library
+    /// thumbnail. The trailing spacer is the picker's mirror image, so the shutter
+    /// stays centred on the screen rather than on what's left of the row.
+    private var bottomControls: some View {
+        HStack {
+            libraryButton
+            Spacer()
+            recordButton
+            Spacer()
+            Color.clear.frame(width: libraryButtonSize, height: libraryButtonSize)
+        }
+        .padding(.horizontal, 32)
+    }
+
+    private var libraryButtonSize: CGFloat { 54 }
+
+    /// Pulls an attempt in from Photos for climbs someone else filmed, or that were
+    /// shot before the app was open. It lands in exactly the same place a recording
+    /// does: ingested, saved, and opened on its own page.
+    private var libraryButton: some View {
+        Button {
+            showingLibrary = true
+        } label: {
+            Image(systemName: "photo.on.rectangle")
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: libraryButtonSize, height: libraryButtonSize)
+                .glassEffect(.regular, in: .circle)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        // Nothing to import onto mid-take; the shutter owns the screen while it runs.
+        .opacity(capture.status == .recording ? 0 : 1)
+        .disabled(capture.status == .recording)
+        .animation(.smooth(duration: 0.2), value: capture.status)
+        .sheet(isPresented: $showingLibrary) {
+            VideoLibraryPicker { provider in
+                showingLibrary = false
+                importVideo(provider)
+            } onCancel: {
+                showingLibrary = false
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    /// What sits over the black between picking a video and the attempt page. A
+    /// recording is ingested in a moment and gets the bare spinner; a Photos import
+    /// can mean an iCloud download, so it gets the bar it is actually filling and a
+    /// way out.
+    private var processingScreen: some View {
+        VStack(spacing: 18) {
+            if let importProgress {
+                ProgressView(value: importProgress)
+                    .progressViewStyle(.linear)
+                    .tint(.white)
+                    .frame(width: 200)
+                Text("Importing from Photos")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.7))
+                Button("Cancel") {
+                    importJob?.cancel()
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.top, 4)
+            } else {
+                ProgressView().controlSize(.large).tint(.white)
+            }
+        }
+        .animation(.smooth(duration: 0.2), value: importProgress == nil)
     }
 
     /// The Camera app's shutter: a full liquid-glass disc with a red disc on top that
@@ -264,6 +345,54 @@ struct AttemptFlowView: View {
         .foregroundStyle(.white.opacity(0.7))
     }
 
+    /// Pulls the picked video out of Photos and hands it to the same ingest the camera
+    /// uses. Cancelling — or a failed load — drops straight back to the camera; there
+    /// is nothing half-saved to clean up.
+    private func importVideo(_ provider: NSItemProvider) {
+        phase = .processing
+        importProgress = 0
+        Task {
+            let url = await copyOutOfLibrary(provider)
+            importProgress = nil
+            importJob = nil
+            guard let url else {
+                phase = .capture
+                return
+            }
+            ingest(url: url, stoppedAt: Date())
+        }
+    }
+
+    /// The file Photos hands back lives only until the completion handler returns, so
+    /// it gets moved somewhere we own — a rename, not a second copy of the video.
+    @MainActor
+    private func copyOutOfLibrary(_ provider: NSItemProvider) async -> URL? {
+        var observation: NSKeyValueObservation?
+        let url: URL? = await withCheckedContinuation { continuation in
+            let job = provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                guard let url else { continuation.resume(returning: nil); return }
+                let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+                let mine = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("picked-\(UUID().uuidString).\(ext)")
+                try? FileManager.default.removeItem(at: mine)
+                do {
+                    try FileManager.default.moveItem(at: url, to: mine)
+                } catch {
+                    guard (try? FileManager.default.copyItem(at: url, to: mine)) != nil else {
+                        continuation.resume(returning: nil); return
+                    }
+                }
+                continuation.resume(returning: mine)
+            }
+            observation = job.observe(\.fractionCompleted) { job, _ in
+                Task { @MainActor in importProgress = job.fractionCompleted }
+            }
+            importJob = job
+        }
+        observation?.invalidate()
+        return url
+    }
+
     /// Moves the recording into permanent storage, saves it as an attempt, and shows
     /// the attempt's own page over it. The rest timer runs from `stoppedAt` — the
     /// moment the user hit stop, not the moment ingest ends — so the countdown the
@@ -283,6 +412,41 @@ struct AttemptFlowView: View {
                 }
                 phase = .review
             }
+        }
+    }
+}
+
+/// PHPicker rather than SwiftUI's `PhotosPicker`, for the one setting that decides how
+/// long the wait is: `.current` hands over the file as it already sits on disk, where
+/// the default re-encodes every video on its way out of the library.
+private struct VideoLibraryPicker: UIViewControllerRepresentable {
+    var onPick: (NSItemProvider) -> Void
+    var onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.filter = .videos
+        configuration.selectionLimit = 1
+        configuration.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let parent: VideoLibraryPicker
+
+        init(_ parent: VideoLibraryPicker) { self.parent = parent }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard let provider = results.first?.itemProvider else {
+                parent.onCancel(); return
+            }
+            parent.onPick(provider)
         }
     }
 }

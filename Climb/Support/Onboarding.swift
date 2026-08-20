@@ -37,12 +37,27 @@ final class Onboarding {
     /// the last pass left in the practice note is still there at the start of the next.
     static let loopsForDevelopment = false
 
+    /// Debug: straight past the whole flow into the app, for when the thing being
+    /// looked at is the app rather than the way in. Where the flow actually got to is
+    /// left written down untouched, so turning this back off comes back to that screen
+    /// rather than to a run that has been marked finished.
+    static let skipsOnboarding = true
+
+    private static let introKey = "onboardingIntroSeen"
     private static let phaseKey = "onboardingPhase"
     private static let quizIndexKey = "onboardingQuizIndex"
     private static let answersKey = "onboardingAnswers"
 
     private(set) var phase: Phase {
         didSet { UserDefaults.standard.set(phase.rawValue, forKey: Self.phaseKey) }
+    }
+
+    /// Whether the opening slideshow has been past. Kept apart from `phase` on purpose:
+    /// it is not a step of the flow but the thing in front of all of it, so it shows on
+    /// a first launch whatever phase that launch would otherwise have opened on — and
+    /// stays gone afterwards whatever the flow does next.
+    var hasSeenIntro: Bool {
+        didSet { UserDefaults.standard.set(hasSeenIntro, forKey: Self.introKey) }
     }
 
     /// Whether the first run is behind them — the one thing the rest of the app asks.
@@ -71,6 +86,7 @@ final class Onboarding {
 
     private init() {
         let defaults = UserDefaults.standard
+        hasSeenIntro = defaults.bool(forKey: Self.introKey)
         phase = defaults.string(forKey: Self.phaseKey).flatMap(Phase.init) ?? .quiz
         quizIndex = defaults.integer(forKey: Self.quizIndexKey)
         var saved = defaults.dictionary(forKey: Self.answersKey) as? [String: String] ?? [:]
@@ -88,7 +104,16 @@ final class Onboarding {
         if !Self.showsPaywall, phase == .paywall { phase = Self.showsTutorial ? .tutorial : .done }
         // Likewise for anyone left standing in the walkthrough by an earlier build.
         if !Self.showsTutorial, phase == .tutorial { phase = .done }
+        if Self.skipsOnboarding {
+            let saved = phase
+            phase = .done
+            defaults.set(saved.rawValue, forKey: Self.phaseKey)
+        }
     }
+
+    /// Past the slideshow, by walking it or by skipping it — the same thing, and it is
+    /// meant to be: an intro you cannot decline is an advert.
+    func finishIntro() { hasSeenIntro = true }
 
     /// Out of the quiz into the beat where the answers are made something of.
     func finishQuiz() { phase = .loading }
@@ -98,7 +123,11 @@ final class Onboarding {
     /// line — this is the screen that has to exist for that to be true.
     func finishLoading() { phase = .profile }
 
-    func finishProfile() { phase = Self.showsPaywall ? .paywall : Self.next(after: .paywall) }
+    /// Out of the goal screen and into the app. The wall used to be the screen after
+    /// this one; it is now the bottom of this one, so a purchase made there is the end
+    /// of the flow. The paywall itself is still built and still shown — over a sixth
+    /// session, and to anybody whose subscription isn't current.
+    func finishProfile() { phase = .done }
 
     /// Back out of the walkthrough into the quiz — onto its last question. The index is
     /// left where the quiz ended for exactly this: back is one step back, not a return
@@ -124,5 +153,5 @@ final class Onboarding {
 
     /// Debug helper: back to the top of the flow. Where you are, and nothing you own —
     /// there is no path in the app that deletes a note without being asked to.
-    func reset() { phase = .quiz; quizIndex = 0; answers = [:] }
+    func reset() { phase = .quiz; quizIndex = 0; answers = [:]; hasSeenIntro = false }
 }

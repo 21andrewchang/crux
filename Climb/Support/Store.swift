@@ -22,13 +22,25 @@ final class Store {
 
         var title: String { self == .yearly ? "Yearly" : "Monthly" }
 
+        /// What the plan costs, written down once. Everything the paywall says about
+        /// money before the App Store has answered — the price, the month it divides
+        /// into, the saving one plan is against the other — comes off these two numbers,
+        /// so a screen drawn early says one consistent set of figures rather than three
+        /// separately maintained ones.
+        var fallbackAmount: Decimal { self == .yearly ? 39.99 : 9.99 }
+
         /// Shown until the real product lands — and on a build with nothing configured
         /// to sell, shown for good, so the paywall is never a screen of blank rows.
-        var fallbackPrice: String { self == .yearly ? "$39.99 / year" : "$4.99 / month" }
+        var fallbackPrice: String {
+            "\(fallbackAmount.formatted(.currency(code: "USD"))) / \(self == .yearly ? "year" : "month")"
+        }
 
-        /// The yearly plan's own selling point, worked out here rather than fetched:
-        /// it is the same number however the price is written.
-        var note: String? { self == .yearly ? "$3.33 / month" : nil }
+        /// The trial the yearly plan is set up with, for a screen drawn before the
+        /// products have come back. Same standing as `fallbackPrice`: what the screen
+        /// says while it is waiting, replaced by the App Store's own answer the moment
+        /// there is one.
+        var fallbackTrial: String? { self == .yearly ? "3 days" : nil }
+
     }
 
     private(set) var products: [Product] = []
@@ -53,15 +65,26 @@ final class Store {
     /// not watch the paywall flash past on every cold launch while that moment passes.
     /// The remembered answer is replaced by the real one as soon as it lands, so the
     /// worst this can be is one launch out of date for somebody who just cancelled.
-    private(set) var isPro = UserDefaults.standard.bool(forKey: Store.proKey) {
-        didSet { UserDefaults.standard.set(isPro, forKey: Self.proKey) }
+    var isPro: Bool {
+        get { Self.forcesPro || storedIsPro }
+        set { storedIsPro = newValue }
+    }
+
+    /// Debug: a subscription without a purchase, for working inside the app rather
+    /// than on the way into it. It only masks the answer — what the App Store actually
+    /// says is still asked for and still written down underneath, so turning this off
+    /// leaves the real entitlement exactly as it was.
+    static let forcesPro = true
+
+    private var storedIsPro = UserDefaults.standard.bool(forKey: Store.proKey) {
+        didSet { UserDefaults.standard.set(storedIsPro, forKey: Self.proKey) }
     }
 
     private static let proKey = "isPro"
 
     /// Brings `isPro` back in line with what the App Store says is owned.
     func refresh() async {
-        isPro = await isSubscribed
+        storedIsPro = await isSubscribed
     }
 
     /// Watches for the entitlement changes the app never asks for: a renewal, a lapse,
@@ -97,6 +120,36 @@ final class Store {
 
     func product(for plan: Plan) -> Product? {
         products.first { $0.id == plan.rawValue }
+    }
+
+    /// What a year costs a month, in the user's own currency — the number the yearly
+    /// plan is actually judged on, since the two plans are different lengths and only
+    /// a common unit lets them be read against each other.
+    func perMonth(for plan: Plan) -> String {
+        guard let product = product(for: plan) else {
+            let value = plan == .yearly ? plan.fallbackAmount / 12 : plan.fallbackAmount
+            return value.formatted(.currency(code: "USD"))
+        }
+        let value = plan == .yearly ? product.price / 12 : product.price
+        return value.formatted(product.priceFormatStyle)
+    }
+
+    /// How much less a year costs than twelve of the monthly plan, as a whole
+    /// percentage — the yearly row's one real selling point.
+    ///
+    /// Worked out from the two prices rather than written down as a percentage — the
+    /// App Store's where it has answered, and the plans' own figures where it hasn't,
+    /// which are the same prices set up in Connect and in `Crux.storekit`. Nothing at
+    /// all if the year somehow isn't the cheaper of the two.
+    var yearlySaving: Int? {
+        let yearly = product(for: .yearly)?.price ?? Plan.yearly.fallbackAmount
+        let monthly = product(for: .monthly)?.price ?? Plan.monthly.fallbackAmount
+        guard monthly > 0 else { return nil }
+        let year = monthly * 12
+        guard year > yearly else { return nil }
+        let share = (year - yearly) / year
+        let percent = Int((NSDecimalNumber(decimal: share).doubleValue * 100).rounded())
+        return percent > 0 ? percent : nil
     }
 
     /// Price as the App Store writes it, in the user's own currency — the hardcoded
@@ -144,6 +197,17 @@ final class Store {
         return "\(count) \(unit)\(count == 1 ? "" : "s")"
     }
 
+    /// The trial as the paywall should print it: what the App Store said, or — while it
+    /// hasn't answered yet — what the plan is set up to offer.
+    ///
+    /// The fallback stands in every build, not just debug ones. The offer is configured
+    /// in App Store Connect and in `Crux.storekit` alike, so the two answers are the
+    /// same answer; what the fallback buys is a paywall that says it on the first frame
+    /// rather than after the products land.
+    func trialLabel(for plan: Plan) -> String? {
+        trial(for: plan) ?? plan.fallbackTrial
+    }
+
     /// The same trial as a length of time, for laying down the reminder that it is
     /// about to end.
     func trialLength(for plan: Plan) -> TimeInterval? {
@@ -186,7 +250,7 @@ final class Store {
                 // reads from here on, and an unfinished transaction comes back at
                 // every launch.
                 await transaction.finish()
-                isPro = true
+                storedIsPro = true
                 return true
             case .userCancelled:
                 return false

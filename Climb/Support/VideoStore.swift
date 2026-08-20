@@ -12,10 +12,15 @@ enum VideoStore {
 
     /// Moves a freshly captured recording into permanent storage and renders its poster
     /// frame, so inline rows can draw immediately without touching AVFoundation.
+    ///
+    /// The source extension is kept: recordings are always `.mov`, but a video picked
+    /// out of Photos can just as easily be `.mp4`, and AVFoundation reads the container
+    /// the name promises.
     static func ingest(recordingAt source: URL, attemptID: UUID) async
         -> (video: String, thumbnail: String?, duration: TimeInterval)
     {
-        let videoName = "\(attemptID.uuidString).mov"
+        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+        let videoName = "\(attemptID.uuidString).\(ext)"
         let destination = directory.appendingPathComponent(videoName)
         try? FileManager.default.removeItem(at: destination)
         do {

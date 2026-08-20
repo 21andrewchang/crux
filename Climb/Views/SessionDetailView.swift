@@ -333,7 +333,7 @@ struct SessionDetailView: View {
     private var pages: some View {
         TabView(selection: $tab) {
             ForEach(NoteTab.allCases) { page in
-                editor(for: page)
+                self.page(for: page)
                     // On the page itself, not on the `TabView` around it: the paging
                     // view lays its children out inside the bars whatever the
                     // container was told, and a page inset by them is a page cut off
@@ -355,6 +355,20 @@ struct SessionDetailView: View {
         // toolbar — and the one inside is what stops each page laying itself out
         // inside them.
         .ignoresSafeArea(.all, edges: .vertical)
+    }
+
+    /// One page. Three of the four are editors; the review is not a document at all —
+    /// it is counted off what the other three logged, so it is built rather than typed
+    /// into. See `SessionReviewView`.
+    @ViewBuilder
+    private func page(for page: NoteTab) -> some View {
+        if page == .review {
+            SessionReviewView(session: session,
+                              topInset: headerBottom,
+                              onChange: saveChanges)
+        } else {
+            editor(for: page)
+        }
     }
 
     private func editor(for page: NoteTab) -> some View {

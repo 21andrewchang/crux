@@ -11,9 +11,6 @@ struct SessionListView: View {
     /// the check-in is done with — answered or backed out of.
     @State private var checkingIn: ClimbSession?
     @State private var searchText = ""
-    @State private var store = Store.shared
-    /// Up when the compose button was pressed with no free session left to make.
-    @State private var showsPaywall = false
     /// The global bottom bar's state; the bar itself floats over the whole
     /// navigation stack below, so it never re-enters or resets across pushes.
     @State private var barModel = BottomBarModel()
@@ -141,13 +138,6 @@ struct SessionListView: View {
                     },
                     onSkip: { open(session) })
             }
-            // A sheet rather than a cover: this paywall is one you are meant to be able
-            // to put down.
-            .sheet(isPresented: $showsPaywall) {
-                PaywallView(presentation: .limitReached,
-                            onPurchase: subscribed,
-                            onDismiss: { showsPaywall = false })
-            }
         }
         .bottomBarHost(barModel)
     }
@@ -199,67 +189,8 @@ struct SessionListView: View {
                         .listRowInsets(EdgeInsets(top: 16, leading: 0, bottom: 8, trailing: 0))
                 }
             }
-            if showsUsage {
-                Section {
-                    usageBar
-                        .plainRow()
-                        .listRowInsets(EdgeInsets(top: 24, leading: 0, bottom: 8, trailing: 0))
-                }
-            }
         }
         .listStyle(.insetGrouped)
-    }
-
-    /// Whether the free tier's meter is on screen.
-    ///
-    /// Not while subscribed — there is no limit left to meter — and not on an empty
-    /// list, where "0 of 5 used" would be the app's opening line. It appears with the
-    /// first session, which is the point at which a number is worth reading: what makes
-    /// running out feel fair is having watched it coming, and what makes an empty app
-    /// feel unwelcoming is being shown a quota before using anything.
-    ///
-    /// A search that hides rows leaves it up. It counts what is kept, not what is
-    /// listed, and blinking out because a query matched nothing would read as the
-    /// number having changed.
-    private var showsUsage: Bool {
-        !store.isPro && !ownSessions.isEmpty
-    }
-
-    /// How much of the free tier is spent, said plainly and tappable. Tapping opens the
-    /// paywall early — someone who reads the meter and decides now is the time to
-    /// subscribe should not have to hit the wall first to be allowed to.
-    private var usageBar: some View {
-        let used = min(ownSessions.count, FreeTier.sessionLimit)
-        let isFull = FreeTier.remaining(ownSessionCount: ownSessions.count) == 0
-        return Button {
-            showsPaywall = true
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("\(used) of \(FreeTier.sessionLimit) free sessions")
-                    Spacer()
-                    Text(isFull ? "Subscribe" : "Upgrade")
-                        .foregroundStyle(.white)
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-                // Drawn rather than a ProgressView: this needs to be a hairline on
-                // black, and the system's bar brings its own colour and thickness.
-                GeometryReader { proxy in
-                    let fraction = Double(used) / Double(FreeTier.sessionLimit)
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.surface)
-                        Capsule()
-                            .fill(isFull ? Color.routeHold : Color.white.opacity(0.55))
-                            .frame(width: max(3, proxy.size.width * fraction))
-                    }
-                }
-                .frame(height: 3)
-            }
-        }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.2), value: used)
     }
 
     private func row(for session: ClimbSession) -> some View {
@@ -318,15 +249,8 @@ struct SessionListView: View {
         ContentUnavailableView.search(text: searchText)
     }
 
-    /// Compose. Under the cap this is the whole of it; at the cap the paywall comes up
-    /// instead and nothing is written — the session is not made and then taken away,
-    /// which would leave a note on screen that the list refuses to keep.
+    /// Compose.
     private func createSession() {
-        guard FreeTier.allowsAnotherSession(ownSessionCount: ownSessions.count,
-                                            isPro: store.isPro) else {
-            showsPaywall = true
-            return
-        }
         let session = ClimbSession()
         modelContext.insert(session)
         try? modelContext.save()
@@ -337,16 +261,12 @@ struct SessionListView: View {
     /// one turn: dismissing a cover and pushing a destination in the same frame drops
     /// the push, so the note is opened once the cover has actually gone.
     private func open(_ session: ClimbSession) {
+        // The check-in is the door into the session, so leaving it is the session
+        // starting — whether the four questions were answered or walked past.
+        session.startIfNeeded()
+        try? modelContext.save()
         checkingIn = nil
         DispatchQueue.main.async { newSession = session }
-    }
-
-    /// Bought, from the wall they hit on the way to a new session — so they get the
-    /// session they asked for. The guard in `createSession` passes now that the
-    /// entitlement has moved, and the note opens as if the wall had never been there.
-    private func subscribed() {
-        showsPaywall = false
-        createSession()
     }
 
     /// Indexes are into the rows of one week's card, not the whole list.

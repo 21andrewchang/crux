@@ -12,37 +12,15 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            switch onboarding.phase {
-            case .quiz:
-                QuizView(onFinish: onboarding.finishQuiz)
-            case .loading:
-                LoadingView(onFinish: onboarding.finishLoading)
-            case .profile:
-                // What the quiz was for, before anything is asked for in return: the
-                // answers drawn as one shape. It comes before the wall on purpose —
-                // this is the screen that makes the wall worth answering.
-                ProfileView(onFinish: onboarding.finishProfile)
-            case .paywall:
-                // A screen of its own rather than a cover over anything: there is
-                // nothing behind it at this point in the flow, and nothing behind it
-                // is the point — it is the only way on.
-                PaywallView(onPurchase: finishPaywall)
-            case .tutorial:
-                // The walkthrough is the seeded note itself, opened on its own — there
-                // is no list behind it to go back to.
-                TutorialHost()
-            case .done:
-                // The wall is the door to the app, not a screen at the end of
-                // onboarding: a subscription that lapses, is refunded, or was never
-                // bought puts it straight back up. Nothing is deleted by it — what was
-                // written is still there on the other side of paying again.
-                if store.isPro || !Onboarding.showsPaywall {
-                    SessionListView()
-                } else {
-                    PaywallView(onPurchase: {})
-                }
+            // In front of the whole flow rather than inside it: the app says what it is
+            // before it asks anything, and after that it never comes back.
+            if !onboarding.hasSeenIntro {
+                IntroView(onFinish: onboarding.finishIntro)
+            } else {
+                phases
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: onboarding.hasSeenIntro)
         .animation(.easeInOut(duration: 0.25), value: onboarding.phase)
         // The goal note exists from the first launch onward, whatever phase this one
         // opens in: onboarding writes into it before the list is ever reached.
@@ -62,6 +40,41 @@ struct RootView: View {
         .task {
             guard ProcessInfo.processInfo.arguments.contains("-resetOnboarding") else { return }
             onboarding.reset()
+        }
+    }
+
+    /// The first-run flow proper, once the slideshow is behind them.
+    @ViewBuilder
+    private var phases: some View {
+        switch onboarding.phase {
+        case .quiz:
+            QuizView(onFinish: onboarding.finishQuiz)
+        case .loading:
+            LoadingView(onFinish: onboarding.finishLoading)
+        case .profile:
+            // What the quiz was for, before anything is asked for in return: the
+            // answers drawn as one shape. It comes before the wall on purpose —
+            // this is the screen that makes the wall worth answering.
+            ProfileView(onFinish: onboarding.finishProfile)
+        case .paywall:
+            // A screen of its own rather than a cover over anything: there is
+            // nothing behind it at this point in the flow, and nothing behind it
+            // is the point — it is the only way on.
+            PaywallView(onPurchase: finishPaywall)
+        case .tutorial:
+            // The walkthrough is the seeded note itself, opened on its own — there
+            // is no list behind it to go back to.
+            TutorialHost()
+        case .done:
+            // The wall is the door to the app, not a screen at the end of
+            // onboarding: a subscription that lapses, is refunded, or was never
+            // bought puts it straight back up. Nothing is deleted by it — what was
+            // written is still there on the other side of paying again.
+            if store.isPro || !Onboarding.showsPaywall {
+                SessionListView()
+            } else {
+                PaywallView(onPurchase: {})
+            }
         }
     }
 

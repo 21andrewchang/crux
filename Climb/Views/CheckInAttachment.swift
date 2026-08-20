@@ -34,6 +34,12 @@ final class CheckInAttachment: NSTextAttachment {
     /// than as another line of it.
     static let margin: CGFloat = 8
 
+    /// What the card pulls in from the text column so its content lands on the flow's
+    /// margin rather than the note's. The flow insets its whole screen by 24; the note
+    /// runs its text at `textContainerInset.left` of 16, so the card makes up the
+    /// difference itself and the two read as one page.
+    static let sideInset: CGFloat = 8
+
     override init(data: Data?, ofType uti: String?) {
         super.init(data: data, ofType: uti)
         allowsTextAttachmentView = true
@@ -131,6 +137,7 @@ final class CheckInViewProvider: NSTextAttachmentViewProvider {
         if let attachment = textAttachment as? CheckInAttachment {
             card.configure(answers: attachment.answers())
             card.onOpen = { [weak attachment] in attachment?.onOpen() }
+            card.onTextSizeChange = { [weak attachment] in attachment?.invalidateHeight() }
             attachment.cardView = card
         }
         view = card
@@ -150,12 +157,21 @@ final class CheckInViewProvider: NSTextAttachmentViewProvider {
 
 /// The card itself: the score, what it came to, and the four answers behind it.
 ///
-/// Drawn at a size that assumes it is the only thing on its page, because it is. The
-/// number carries the colour and nothing else does — it is the one thing here you
+/// Set to look exactly like the last slide of `CheckInFlow`, down to the point sizes
+/// and the opacities — it is the same reading, and a check-in that changes shape
+/// between the screen you answered it on and the note it lands in reads as two
+/// different figures. Ranged left for the same reason the flow is: the eye comes back
+/// to one margin, and a centred column of four rows under a centred number is a poster,
+/// not a page.
+///
+/// The number carries the colour and nothing else does — it is the one thing here you
 /// should be able to read without reading it.
 final class CheckInCardView: UIView {
     /// The card was tapped.
     var onOpen: (() -> Void)?
+    /// The system text size moved under the card, so the height measured off it is
+    /// stale — only the attachment can ask for the line to be laid out again.
+    var onTextSizeChange: (() -> Void)?
 
     private let column = UIStackView()
     private let scoreLabel = UILabel()
@@ -174,29 +190,35 @@ final class CheckInCardView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func buildHierarchy() {
-        scoreLabel.font = .systemFont(ofSize: 84, weight: .bold)
-        scoreLabel.textAlignment = .center
+        // The flow's `.system(size: 96, weight: .heavy)`; the tracking is applied with
+        // the text, since a label carries kerning on the string rather than the font.
+        // Fixed points, and right to leave fixed: a SwiftUI `.system(size:)` does not
+        // scale with the text size either, so the two only agree if this one holds.
+        scoreLabel.font = .systemFont(ofSize: 96, weight: .heavy)
 
-        verdictLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-        verdictLabel.textColor = .label
-        verdictLabel.textAlignment = .center
+        // `.title2.weight(.semibold)`, `.body` and `.subheadline`, scaled the way
+        // SwiftUI scales them. Fixed point sizes matched the flow at the default text size
+        // and at no other, which is what made these read small.
+        verdictLabel.font = Self.scaled(22, weight: .semibold, style: .title2)
+        verdictLabel.adjustsFontForContentSizeCategory = true
+        verdictLabel.textColor = .white
 
-        adviceLabel.font = .systemFont(ofSize: 14)
-        adviceLabel.textColor = .secondaryLabel
-        adviceLabel.textAlignment = .center
+        adviceLabel.font = .preferredFont(forTextStyle: .body)
+        adviceLabel.adjustsFontForContentSizeCategory = true
+        adviceLabel.textColor = UIColor.white.withAlphaComponent(0.55)
         adviceLabel.numberOfLines = 0
 
         // What the number was made of, under it and smaller. The four answers are the
         // receipt for the score, and nobody reads a receipt first.
         summary.axis = .vertical
-        summary.spacing = 7
+        summary.spacing = 10
         for field in CheckIn.fields {
             summary.addArrangedSubview(makeSummaryRow(field))
         }
 
         column.axis = .vertical
         column.alignment = .fill
-        column.spacing = 2
+        column.spacing = 4
         column.translatesAutoresizingMaskIntoConstraints = false
         column.addArrangedSubview(scoreLabel)
         column.addArrangedSubview(verdictLabel)
@@ -209,9 +231,17 @@ final class CheckInCardView: UIView {
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor, constant: CheckInAttachment.margin),
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CheckInAttachment.margin),
-            column.leadingAnchor.constraint(equalTo: leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: trailingAnchor),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor,
+                                            constant: CheckInAttachment.sideInset),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor,
+                                             constant: -CheckInAttachment.sideInset),
         ])
+
+        // The labels resize themselves; the line they sit on does not, so the card
+        // says so and the attachment re-measures.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (card: CheckInCardView, _) in
+            card.onTextSizeChange?()
+        }
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         isAccessibilityElement = true
@@ -220,20 +250,40 @@ final class CheckInCardView: UIView {
     }
 
     private func makeSummaryRow(_ field: CheckIn.Field) -> UIView {
+        // A square box each, at one point size: symbols are drawn to wildly different
+        // widths, and left to themselves they sit at four different sizes down four
+        // different margins.
+        let metrics = UIFontMetrics(forTextStyle: .subheadline)
+        let box = metrics.scaledValue(for: 18)
+        let icon = UIImageView(image: UIImage(
+            systemName: field.icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: metrics.scaledValue(for: 13))))
+        icon.tintColor = UIColor.white.withAlphaComponent(0.45)
+        icon.contentMode = .center
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        icon.widthAnchor.constraint(equalToConstant: box).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: box).isActive = true
+
         let name = UILabel()
         name.text = field.title
-        name.font = .systemFont(ofSize: 15)
-        name.textColor = .tertiaryLabel
+        name.font = .preferredFont(forTextStyle: .subheadline)
+        name.adjustsFontForContentSizeCategory = true
+        name.textColor = UIColor.white.withAlphaComponent(0.45)
 
         let value = UILabel()
-        value.font = .systemFont(ofSize: 15, weight: .medium)
-        value.textColor = .secondaryLabel
+        value.font = .preferredFont(forTextStyle: .subheadline)
+        value.adjustsFontForContentSizeCategory = true
+        value.textColor = UIColor.white.withAlphaComponent(0.8)
         value.textAlignment = .right
         values.append(value)
 
-        let row = UIStackView(arrangedSubviews: [name, value])
+        let row = UIStackView(arrangedSubviews: [icon, name, UIView(), value])
         row.axis = .horizontal
-        row.spacing = 12
+        row.alignment = .center
+        row.spacing = 0
+        row.setCustomSpacing(10, after: icon)
+        row.setCustomSpacing(12, after: name)
         return row
     }
 
@@ -241,12 +291,29 @@ final class CheckInCardView: UIView {
         onOpen?()
     }
 
-    func configure(answers: [Int]) {
+    /// A text style's size at the user's setting, kept at a weight the style has no
+    /// say in — SwiftUI's `.title2.weight(.semibold)` in UIKit terms.
+    private static func scaled(_ size: CGFloat, weight: UIFont.Weight,
+                               style: UIFont.TextStyle) -> UIFont {
+        UIFontMetrics(forTextStyle: style).scaledFont(for: .systemFont(ofSize: size, weight: weight))
+    }
+
+    /// The flow's `.tracking(-2)` on the number — at 96 points the default letter
+    /// spacing leaves a hole between the digits.
+    private func setScore(_ text: String, tint: UIColor) {
+        scoreLabel.attributedText = NSAttributedString(
+            string: text,
+            attributes: [.font: scoreLabel.font as Any, .foregroundColor: tint, .kern: -2])
+    }
+
+    func configure(answers stored: [Int]) {
+        // Read through the migration like the flow does, so a session answered when
+        // the questions offered five options still has a score to show.
+        let answers = CheckIn.migrating(stored)
         let verdict = CheckIn.verdict(for: answers)
 
         if let score = CheckIn.readiness(answers), let verdict {
-            scoreLabel.text = "\(score)"
-            scoreLabel.textColor = verdict.band.uiTint
+            setScore("\(score)", tint: verdict.band.uiTint)
             verdictLabel.text = verdict.headline
             adviceLabel.text = verdict.advice
             accessibilityLabel = "Readiness \(score). \(verdict.headline). \(verdict.advice)"
@@ -254,16 +321,18 @@ final class CheckInCardView: UIView {
             // Backed out of rather than answered. The card says what it is for and
             // nothing else — a number would have to be invented to sit there, and a
             // dash reads as a score of nothing rather than as a question never asked.
-            scoreLabel.text = "—"
-            scoreLabel.textColor = .quaternaryLabel
+            setScore("—", tint: UIColor.white.withAlphaComponent(0.25))
             verdictLabel.text = "Check in"
-            adviceLabel.text = "Four questions, ten seconds — what this session should be."
-            accessibilityLabel = "Check in. Four questions, ten seconds."
+            adviceLabel.text = "Five questions, ten seconds — what this session should be."
+            accessibilityLabel = "Check in. Five questions, ten seconds."
         }
 
         for (index, field) in CheckIn.fields.enumerated() {
             let answer = answers.indices.contains(index) ? answers[index] : CheckIn.unanswered
             values[index].text = field.options.indices.contains(answer) ? field.options[answer] : "—"
+            // Coloured by how good the answer was, along the same ramp the flow uses.
+            values[index].textColor = field.score(for: answer).map(CheckIn.uiTint(forQuality:))
+                ?? UIColor.white.withAlphaComponent(0.8)
         }
         summary.isHidden = verdict == nil
     }

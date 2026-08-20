@@ -13,6 +13,12 @@ struct QuizView: View {
         /// Several answers rather than one — which also means the screen no longer
         /// advances on a tap, since a tap is now "and this too".
         var allowsMultiple = false
+        /// How many of them at most. A list you can tick all the way down tells us
+        /// nothing — asking for a few forces the ranking that makes the answer worth
+        /// having. Once the count is reached the rows left over go quiet rather than
+        /// swapping something out under the finger: what you picked stays picked until
+        /// you take it back yourself.
+        var limit: Int?
         /// Adds a row that opens a field, for the answer the list doesn't have.
         var allowsOther = false
         /// What a chosen row reads in. White for a question with one answer; a colour
@@ -78,7 +84,7 @@ struct QuizView: View {
         // Straight after what you're on, on the same tape, and opening on whatever that
         // answer landed on — so the goal is however far it gets dragged from there, and
         // dragging it nowhere is the honest zero rather than a number the app picked.
-        .init(id: "goalGrade", title: "What's your goal grade?", options: [],
+        .init(id: "goalGrade", title: "What's your target grade?", options: [],
               measure: .goalGrade),
         .init(id: "experience", title: "How long have you been climbing?",
               options: ["Just started", "Under a year", "1–3 years", "3+ years"]),
@@ -91,11 +97,12 @@ struct QuizView: View {
         // marked red then green — the second screen keeps the red so it reads as one
         // list being sorted rather than the same question asked again.
         .init(id: "weaknesses", title: "What holds you back?",
-              options: attributes, allowsMultiple: true, tint: .red,
-              note: "Pick as many as you like."),
+              options: attributes, allowsMultiple: true, limit: 3, tint: .red,
+              note: "Pick up to three."),
         .init(id: "strengths", title: "What are you good at?",
-              options: attributes, allowsMultiple: true, tint: .green,
-              carriesOver: "weaknesses", note: "Your weaknesses stay marked in red."),
+              options: attributes, allowsMultiple: true, limit: 3, tint: .green,
+              carriesOver: "weaknesses",
+              note: "Up to three. Your weaknesses stay marked in red."),
         // The first questions with a right answer. They go here, after the two
         // screens of opinion, because they are the ones the profile is actually built
         // out of — and because a number is a harder thing to give than a tick, which
@@ -209,6 +216,13 @@ struct QuizView: View {
         return Set(saved.components(separatedBy: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty })
+    }
+
+    /// Whether this screen has taken all the answers it will. Rows already ticked are
+    /// still live — untick one and the list opens back up.
+    private var atLimit: Bool {
+        guard let limit = question.limit else { return false }
+        return chosen.count >= limit
     }
 
     private var carriedTint: Color {
@@ -341,7 +355,7 @@ struct QuizView: View {
                 ForEach(Array(rows.enumerated()), id: \.element) { position, option in
                     Button { tap(option) } label: { row(option) }
                         .buttonStyle(.plain)
-                        .disabled(carried.contains(option))
+                        .disabled(carried.contains(option) || spentOn(option))
                         .scaleEffect(revealed ? 1 : 0.88)
                         .opacity(revealed ? 1 : 0)
                         // Only the arrival is animated: going out is instant, so a new
@@ -426,6 +440,12 @@ struct QuizView: View {
     /// once it counts — the same selected state the paywall's plans use, so a choice
     /// looks like a choice everywhere in the app. The "something else" row grows a
     /// field under its label rather than becoming one, so the list keeps its shape.
+    /// A row the count has been used up on: not chosen, not carried, and there is no
+    /// room left for it.
+    private func spentOn(_ option: String) -> Bool {
+        atLimit && !chosen.contains(option) && !carried.contains(option)
+    }
+
     @ViewBuilder
     private func row(_ option: String) -> some View {
         let isCarried = carried.contains(option)
@@ -454,8 +474,10 @@ struct QuizView: View {
         .overlay(RoundedRectangle(cornerRadius: 14)
             .stroke(tint, lineWidth: isMarked ? 1.5 : 0))
         .contentShape(.rect)
-        // A row already spoken for on the screen before is not for changing here.
-        .opacity(isCarried ? 0.65 : 1)
+        // A row already spoken for on the screen before is not for changing here, and
+        // one there is no room left for goes further back than that — still readable,
+        // plainly not tappable, and back to full the moment something is untaken.
+        .opacity(isCarried ? 0.65 : (spentOn(option) ? 0.3 : 1))
     }
 
     /// One bar filling across the quiz — how much is left, without a number. The same
@@ -507,18 +529,23 @@ struct QuizView: View {
             measureValue = saved.isEmpty ? start(of: measure) : measure.value(from: saved)
             return
         }
-        var picks: Set<String> = []
+        var picks: [String] = []
         var typed = ""
         for part in saved.components(separatedBy: ",").map({ $0.trimmingCharacters(in: .whitespaces) })
         where !part.isEmpty {
             if question.options.contains(part) {
-                picks.insert(part)
+                picks.append(part)
             } else if question.allowsOther {
                 typed = part
-                picks.insert(Self.otherOption)
+                picks.append(Self.otherOption)
             }
         }
-        chosen = picks.subtracting(carried)
+        var restored = picks.filter { !carried.contains($0) }
+        // An answer saved before this question had a count — or before the count was
+        // this one — comes back trimmed to what the screen would now let you tick,
+        // keeping the first few rather than dropping the lot.
+        if let limit = question.limit { restored = Array(restored.prefix(limit)) }
+        chosen = Set(restored)
         other = typed
     }
 
@@ -554,6 +581,9 @@ struct QuizView: View {
             chosen.remove(option)
             if option == Self.otherOption { other = "" }
         } else {
+            // The rows are disabled at the limit, so this only catches a tap already
+            // in flight — but the count is the answer's rule, not the button's.
+            guard !atLimit else { return }
             felt(picking: true)
             chosen.insert(option)
             if option == Self.otherOption { otherFocused = true }
