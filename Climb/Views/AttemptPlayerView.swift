@@ -788,7 +788,9 @@ struct AttemptTopBar<Trailing: View>: View {
 }
 
 /// A bare video layer — no system controls, the playbar above is the only chrome.
-private struct PlayerSurface: UIViewRepresentable {
+/// Internal rather than file-private: the intro's clip slide is the same player, and
+/// it has to be the same view rather than a second one that looks like it.
+struct PlayerSurface: UIViewRepresentable {
     let player: AVPlayer
 
     func makeUIView(context: Context) -> PlayerLayerView {
