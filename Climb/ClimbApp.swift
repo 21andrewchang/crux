@@ -28,7 +28,10 @@ struct ClimbApp: App {
         config.sessionReplay = false
         // Crashes are written to disk and uploaded on the next launch. Non-fatal
         // exception autocapture rides on the project's remote error-tracking setting
-        // rather than a flag here.
+        // rather than a flag here. The frames arrive as raw load addresses; PostHog
+        // turns them back into file and line numbers server-side from the dSYMs that
+        // the "Upload dSYMs to PostHog" build phase sends up. Without that upload every
+        // crash report stays unreadable.
         config.errorTrackingConfig.autoCapture = true
         #if DEBUG
         config.debug = true
