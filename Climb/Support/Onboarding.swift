@@ -64,7 +64,7 @@ final class Onboarding {
     /// straight over to the app — the screen and everything behind it (`Store`,
     /// the products, the purchase) is still here, just not in the way while the
     /// rest of onboarding is being worked on.
-    static let showsPaywall = true
+    static let showsPaywall = false
 
     /// Off: a purchase opens the app, which is what it is for. On, it starts the run
     /// over from the quiz instead, so the flow can be walked end to end as many times as

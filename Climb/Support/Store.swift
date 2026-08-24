@@ -18,8 +18,8 @@ final class Store {
     /// What is for sale. The ids are what App Store Connect has to call these, and
     /// what a local `.storekit` configuration has to call them to stand in for it.
     enum Plan: String, CaseIterable {
-        case yearly = "com.andrewchang.Crux.pro.yearly"
-        case monthly = "com.andrewchang.Crux.pro.monthly"
+        case yearly = "com.627b8d.Crux.pro.yearly"
+        case monthly = "com.627b8d.Crux.pro.monthly"
 
         var title: String { self == .yearly ? "Yearly" : "Monthly" }
 

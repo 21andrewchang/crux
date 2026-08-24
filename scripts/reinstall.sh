@@ -12,7 +12,7 @@
 set -euo pipefail
 
 DEVICE_ID="B912DCD3-C247-58B4-98AA-A014D4C521B4"
-BUNDLE_ID="com.andrewchang.Crux"
+BUNDLE_ID="com.627b8d.Crux"
 REMOTE_HOST="${REMOTE_HOST:-andrewchang@100.92.210.96}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # Passed through to the app on launch; empty on a normal run. The `--` matters:

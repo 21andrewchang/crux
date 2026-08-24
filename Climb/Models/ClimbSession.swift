@@ -39,6 +39,18 @@ final class ClimbSession {
     var reviewText: String = ""
     var reviewIDs: [UUID] = []
 
+    /// The note as structure rather than as prose — see `NoteBlock`.
+    ///
+    /// Written alongside `bodyText`, not instead of it. The text pages above stay the
+    /// source of truth until the block editor replaces the old one, so a bad parse
+    /// costs nothing: delete the blocks and build them again.
+    @Relationship(deleteRule: .cascade, inverse: \NoteBlock.session)
+    var blocks: [NoteBlock] = []
+
+    /// Whether `NoteBlockMigration` has read this session's pages into blocks. Set
+    /// once, so reopening a note doesn't build a second copy of its tree.
+    var didBuildBlocks: Bool = false
+
     /// The check-in's answers, one index into `CheckIn.fields[n].options` per
     /// question, `CheckIn.unanswered` for one not answered yet. Empty on a session
     /// from before the card existed, which reads as all four unanswered.
@@ -59,6 +71,19 @@ final class ClimbSession {
     /// review page reads to decide whether the duration it shows is still moving.
     var endedAt: Date?
 
+    /// When the clock was paused, nil while it is running. The moment the number on
+    /// the review page froze at — everything after it is time the session is not
+    /// being credited with.
+    var pausedAt: Date?
+
+    /// How much of the wall clock since `startedAt` was spent paused, in seconds.
+    ///
+    /// This is the whole reason a pause works: the duration is wall time *minus* this,
+    /// so picking a session back up after a night's sleep continues at thirty minutes
+    /// and one second rather than jumping to twenty hours. It is added to when a pause
+    /// is lifted, never while one is open — an open pause is measured off `pausedAt`.
+    var pausedSeconds: TimeInterval = 0
+
     @Relationship(deleteRule: .cascade, inverse: \Attempt.session)
     var attempts: [Attempt] = []
 
@@ -76,8 +101,66 @@ final class ClimbSession {
     /// written before the clock existed, and any opened straight from the list rather
     /// than through the check-in. The note being made is the closest thing those have
     /// to a start, and it is a great deal closer to the truth than a dash.
+    ///
+    /// Ended, paused, or running: the mark the clock is read up to is the first of
+    /// those that applies, and the seconds already spent paused come off whichever it
+    /// is. A paused session hands back the same number every time it is asked.
     func duration(asOf now: Date = Date()) -> TimeInterval {
-        max(0, (endedAt ?? now).timeIntervalSince(startedAt ?? createdAt))
+        let mark = endedAt ?? pausedAt ?? now
+        return max(0, mark.timeIntervalSince(startedAt ?? createdAt) - pausedSeconds)
+    }
+
+    /// Whether the clock is moving. False both for a session paused mid-afternoon and
+    /// for one that has been called — the number on the page is standing still either
+    /// way, which is the thing the review page is asking about.
+    var isRunning: Bool { endedAt == nil && pausedAt == nil }
+
+    /// Whether the clock is stopped but the session is still open. An ended session is
+    /// not paused — it is finished, and reopening it is `reopen(at:)` rather than this.
+    var isPaused: Bool { pausedAt != nil && endedAt == nil }
+
+    /// Stops the clock where it stands. Does nothing to a session already paused or
+    /// already ended.
+    ///
+    /// `startedAt` is deliberately left alone for a session that never had one: its
+    /// duration is measured from `createdAt`, and stamping a start here would take a
+    /// session that has been running all afternoon down to zero.
+    func pause(at date: Date = Date()) {
+        guard endedAt == nil, pausedAt == nil else { return }
+        pausedAt = date
+    }
+
+    /// Picks the clock back up. The stretch that was paused is banked into
+    /// `pausedSeconds` rather than being credited to the session, which is what keeps
+    /// the number on screen from moving on the press.
+    func resume(at date: Date = Date()) {
+        guard let mark = pausedAt else { return }
+        pausedSeconds += max(0, date.timeIntervalSince(mark))
+        pausedAt = nil
+    }
+
+    /// Calls the session. A pause still open is banked first, so the number the page
+    /// freezes at is the number it was already showing rather than one that counts the
+    /// break as climbing.
+    func end(at date: Date = Date()) {
+        resume(at: date)
+        endedAt = date
+    }
+
+    /// Un-calls it. A session ended by mistake, or one being carried on after a break
+    /// long enough to have been written off — either way the clock picks back up from
+    /// the number it froze at.
+    ///
+    /// This is the case the whole `pausedSeconds` arrangement exists for. Clearing
+    /// `endedAt` on its own would have the duration jump to wall time — a session
+    /// ended at thirty minutes and picked up the next morning would read twenty hours
+    /// — so the stretch it spent ended is banked exactly as a pause is, and the clock
+    /// continues at thirty minutes and one second.
+    func reopen(at date: Date = Date()) {
+        guard let ended = endedAt else { return }
+        pausedSeconds += max(0, date.timeIntervalSince(ended))
+        endedAt = nil
+        pausedAt = nil
     }
 
     /// Starts the clock, once. Reopening the check-in to change an answer must not

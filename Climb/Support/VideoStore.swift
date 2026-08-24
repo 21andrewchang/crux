@@ -29,6 +29,8 @@ enum VideoStore {
             try? FileManager.default.copyItem(at: source, to: destination)
         }
 
+        excludeFromBackup(destination)
+
         let asset = AVURLAsset(url: destination)
         let duration = (try? await asset.load(.duration).seconds) ?? 0
         let thumbnailName = await renderThumbnail(for: asset, attemptID: attemptID)
@@ -47,6 +49,39 @@ enum VideoStore {
         let name = "\(attemptID.uuidString).jpg"
         try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
         return name
+    }
+
+    /// Keeps a recording out of the device's iCloud backup.
+    ///
+    /// Every take filmed here is already copied to the camera roll, so backing the
+    /// app's copy up too would count the same footage against the user's iCloud twice
+    /// — and a season of climbing is gigabytes, against a free tier of five. What is
+    /// lost by skipping them is playback after a restore: the attempt, its rating, its
+    /// notes and its thumbnail all come back, and only the video itself is missing.
+    ///
+    /// Thumbnails are deliberately left in the backup. They are tens of kilobytes each
+    /// and they are what makes a restored note still look like the sessions it records.
+    static func excludeFromBackup(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+
+    /// Flags recordings written before the app started excluding them. Cheap enough to
+    /// run at every launch — it only ever sets a flag that is already set — and doing
+    /// it that way avoids keeping a "have I migrated yet" bit around to go stale.
+    static func excludeExistingVideosFromBackup() {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isExcludedFromBackupKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for file in files where file.pathExtension.lowercased() != "jpg" {
+            let already = try? file.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup
+            if already != true { excludeFromBackup(file) }
+        }
     }
 
     static func delete(_ attempt: Attempt) {

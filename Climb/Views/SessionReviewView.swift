@@ -134,7 +134,7 @@ struct SessionReviewView: View {
     /// a page nobody is looking at costs nothing.
     private var clock: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let elapsed = session.duration(asOf: session.endedAt ?? context.date)
+            let elapsed = session.duration(asOf: context.date)
             VStack(alignment: .leading, spacing: 6) {
                 // One word whichever state it is in. The number underneath is the
                 // same measurement running or stopped, and renaming it on the way past
@@ -149,16 +149,88 @@ struct SessionReviewView: View {
                 }
                 .foregroundStyle(Color.paper.opacity(0.45))
 
-                Text(Self.longClock(elapsed))
-                    .font(.system(size: 52, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.paper)
-                    // The digits change width as the hour rolls over; without this the
-                    // whole line jumps a pixel every time a minute does.
-                    .contentTransition(.numericText())
+                // The number and the switch that stops it, on one line. The button is
+                // beside the digits rather than under them because it is a control on
+                // *this* number, and because the bottom of the page belongs to the one
+                // button that ends the session.
+                // Centred rather than sat on the digits' baseline: a symbol's baseline
+                // is not its foot, so a mark aligned that way hangs visibly low against
+                // numerals that have nothing below theirs.
+                HStack(spacing: 12) {
+                    Text(Self.longClock(elapsed))
+                        .font(.system(size: Self.clockSize, weight: .semibold))
+                        .monospacedDigit()
+                        // Dimmer whenever the clock is standing still, paused or ended.
+                        // Nothing is moving, and the digits saying so is what stops a
+                        // frozen clock reading as a broken one.
+                        .foregroundStyle(Color.paper.opacity(session.isRunning ? 1 : 0.5))
+                        // The digits change width as the hour rolls over; without this the
+                        // whole line jumps a pixel every time a minute does.
+                        .contentTransition(.numericText())
+
+                    Spacer(minLength: 0)
+
+                    pauseSwitch
+                }
+                .animation(.easeInOut(duration: 0.2), value: session.isRunning)
             }
         }
     }
+
+    /// Pause, continue, and the way back into a session already called — one control,
+    /// because they are all the same question about the number beside it.
+    ///
+    /// Whenever the clock is moving it offers to stop it; whenever it is standing
+    /// still — paused for lunch, or ended an hour ago and picked back up — it offers
+    /// to continue, and continuing carries on from the number on screen. The stretch
+    /// that was paused or ended is banked rather than climbed, so a session left at
+    /// thirty minutes reads thirty minutes and one second when it comes back, not
+    /// however long the phone was in a bag.
+    ///
+    /// It is the only way back into an ended session, which is why it stays on the page
+    /// after the End button has gone.
+    private var pauseSwitch: some View {
+        Button {
+            if session.endedAt != nil {
+                session.reopen()
+            } else if session.isPaused {
+                session.resume()
+            } else {
+                session.pause()
+            }
+            Haptics.selection()
+            onChange()
+        } label: {
+            // No word, no capsule: a mark drawn to the height of the digits and
+            // centred on them, reading as the other half of the clock rather than as
+            // a control parked next to it. The two glyphs swap in place — the same
+            // switch throwing, not one button leaving and another arriving.
+            Image(systemName: session.isRunning ? "pause.fill" : "play.fill")
+                .font(.system(size: Self.markSize, weight: .semibold))
+                .foregroundStyle(Color.paper)
+                .contentTransition(.symbolEffect(.replace))
+                // Invisible room around a mark that would otherwise be a thin tap
+                // target at the very edge of the screen. The trailing side is wider
+                // than the page's own margin, holding the mark in off the edge rather
+                // than letting it sit flush with the tiles below.
+                .padding(.leading, 16)
+                .padding(.trailing, 10)
+                .padding(.vertical, 8)
+                .contentShape(.rect)
+                // Centring the boxes still leaves the mark reading low beside numerals
+                // whose weight all sits above the baseline. Optical, so it is a nudge
+                // rather than a measurement — and it carries the tap target with it.
+                .offset(y: -4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The clock's own size, and the mark's — one number apiece, because the mark is
+    /// meant to read as part of the number rather than as something beside it. The mark
+    /// is set well under: a symbol drawn at the digits' point size comes out taller
+    /// than they do, since the digits spend theirs on the room above and below.
+    private static let clockSize: CGFloat = 52
+    private static let markSize: CGFloat = 33
 
     /// `1:04:22` past the hour, `4:22` under it — an hour of leading zero on a number
     /// that spends most of its life under sixty minutes is an hour of noise.
@@ -256,21 +328,26 @@ struct SessionReviewView: View {
 
     /// The bottom of the page, and the end of the session: one button, and once it is
     /// pressed, nothing. The ended time is already on the clock above, and the way back
-    /// into an ended session belongs somewhere other than under the button that ends it.
+    /// into an ended session belongs somewhere other than under the button that ends it
+    /// — it is Continue, up beside the number it would restart.
     @ViewBuilder
     private var ender: some View {
         if session.endedAt == nil {
             Button {
-                session.endedAt = Date()
+                session.end()
                 Haptics.sessionEnded()
                 onChange()
                 onEnd()
             } label: {
+                // Sized to its own words rather than to the screen. A full-width slab
+                // is the shape of a button you are meant to press to get on with
+                // something; this one ends the session, which is worth having to aim
+                // at. It keeps the page's left edge with everything else on it.
                 Text("End session")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 17)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
                     .background(Color.paper, in: .capsule)
             }
             .buttonStyle(.plain)

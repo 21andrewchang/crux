@@ -219,7 +219,13 @@ final class BarParkModel: NSObject {
     weak var anchor: UIView?
     /// The accessory clone riding the keyboard, registered by the note editor
     /// when it builds its input accessory view.
-    weak var keyboardBar: UIView?
+    weak var keyboardBar: UIView? {
+        didSet { register(accessory: keyboardBar) }
+    }
+    /// Every clone the note has built — one per page. Parking hides all of them:
+    /// `keyboardBar` is only ever the last page to claim the keyboard, and a
+    /// clone left shown by a page turn is a bar stranded over the note.
+    private var accessories: [WeakView] = []
     /// Mirrors the chrome flips for SwiftUI content that must swap in step —
     /// the overlay-drawn timer capsule hides and shows exactly when the parked
     /// chrome does. Called with `true` when the parked bar is showing.
@@ -231,9 +237,20 @@ final class BarParkModel: NSObject {
     private static let lead: CGFloat = 10
 
     private var watcher: CADisplayLink?
+    /// The stray-bar sweep's own link, and how long it keeps looking — see
+    /// `sweepStrayToolbars`.
+    private var sweeper: CADisplayLink?
+    private var sweepUntil: CFTimeInterval = 0
     private var deadline: Task<Void, Never>?
     /// Cached for the per-frame tick; the flips themselves re-find the chrome.
     private weak var watchedChrome: UIView?
+    /// Exactly the chrome this model hid, and the only thing it will ever show
+    /// again. A push leaves the page behind's bar in the window for as long as
+    /// the morph runs, and UIKit hides it when the morph lands — showing a bar
+    /// we did not hide resurrects that one, frozen wherever its animation was
+    /// interrupted, which is the second bar that used to appear over a note
+    /// opened straight into (and then over the list behind it).
+    private var lifted: [WeakView] = []
     /// The trigger only arms once the clone has been seen *above* the parked
     /// spot. On its way up it starts below (rising from offscreen with the
     /// keyboard), and an unarmed trigger must not read that as "arrived".
@@ -271,8 +288,21 @@ final class BarParkModel: NSObject {
         armed = false
         onParkedVisibilityChange?(false)
         keyboardBar?.isHidden = false
-        watchedChrome = chrome
-        watchedChrome?.isHidden = true
+        // Every bar in the window, not just the first one found: mid-push there
+        // are two, and hiding the wrong one leaves the real bar on screen under
+        // the clone. Each is remembered so only these are shown again.
+        //
+        // Added to rather than replaced: lifting twice without a park in between is
+        // ordinary — the keyboard notification and the page taking focus both ask —
+        // and the second ask finds the bar already hidden. Forgetting it there is
+        // forgetting to ever show it again, which is a note left with no bar at all.
+        let hiding = chromeViews().filter { !$0.isHidden }
+        for view in hiding { view.isHidden = true }
+        lifted.removeAll { $0.view == nil }
+        lifted.append(contentsOf: hiding.filter { view in
+            !lifted.contains { $0.view === view }
+        }.map(WeakView.init))
+        watchedChrome = hiding.first ?? watchedChrome
         log("lift: bar=\(keyboardBar.map(String.init(describing:)) ?? "nil") chrome=\(watchedChrome.map(String.init(describing:)) ?? "nil")")
         startWatching()
     }
@@ -304,8 +334,8 @@ final class BarParkModel: NSObject {
     func restore() {
         stopWatching()
         deadline?.cancel()
-        keyboardBar?.isHidden = false
-        chrome?.isHidden = false
+        hideAccessories()
+        showLifted()
         onParkedVisibilityChange?(true)
     }
 
@@ -313,9 +343,22 @@ final class BarParkModel: NSObject {
         stopWatching()
         deadline?.cancel()
         armed = false
-        keyboardBar?.isHidden = true
-        chrome?.isHidden = false
+        hideAccessories()
+        showLifted()
         onParkedVisibilityChange?(true)
+    }
+
+    /// Every clone this note built, not just the one that took focus last: four
+    /// pages mean four of them, and the page that was typed in is not always the
+    /// page that registered itself most recently.
+    private func hideAccessories() {
+        for bar in accessories.compactMap({ $0.view }) { bar.isHidden = true }
+    }
+
+    /// Back on screen: only the chrome `lift` hid, and nothing else in the window.
+    private func showLifted() {
+        for view in lifted.compactMap({ $0.view }) { view.isHidden = false }
+        lifted = []
     }
 
     private func startWatching() {
@@ -369,17 +412,99 @@ final class BarParkModel: NSObject {
         return y
     }
 
-    private var chrome: UIView? {
-        anchor?.window.flatMap(Self.findFloatingBar(in:))
+    private func register(accessory: UIView?) {
+        guard let accessory else { return }
+        accessories.removeAll { $0.view == nil || $0.view === accessory }
+        accessories.append(WeakView(view: accessory))
     }
 
-    private static func findFloatingBar(in view: UIView) -> UIView? {
-        if String(describing: type(of: view)) == "FloatingBarContainerView" { return view }
-        for subview in view.subviews {
-            if let found = findFloatingBar(in: subview) { return found }
-        }
-        return nil
+    private var chrome: UIView? { chromeViews().first }
+
+    private func chromeViews() -> [UIView] {
+        guard let window = anchor?.window else { return [] }
+        var found: [UIView] = []
+        Self.collectFloatingBars(in: window, into: &found)
+        return found
     }
+
+    private static func collectFloatingBars(in view: UIView, into found: inout [UIView]) {
+        if String(describing: type(of: view)) == "FloatingBarContainerView" {
+            found.append(view)
+            return
+        }
+        for subview in view.subviews { collectFloatingBars(in: subview, into: &found) }
+    }
+
+    /// The second bar. A keyboard raised by the header's title field — which is
+    /// what opening a brand new note does on its own — makes SwiftUI build a
+    /// bottom bar of the OLD kind as well: a `UIKitToolbar` on the navigation
+    /// stack's own host, holding this page's three buttons, laid out with the
+    /// keyboard's inset. It hides behind the keyboard while typing and is then
+    /// left standing 58pt above the real bar for as long as the note is open —
+    /// and over the list behind it, since the stack's host outlives the push.
+    /// SwiftUI never takes it down, so this does.
+    ///
+    /// Safe by construction: every bottom bar this app draws is a floating one
+    /// (`FloatingBarContainerView`), so a toolbar found outside one is the ghost
+    /// and nothing else. Hidden rather than removed — the view is SwiftUI's, and
+    /// pulling it out of the hierarchy is not ours to do.
+    func hideStrayToolbars() {
+        guard let window = anchor?.window else { return }
+        Self.hideStrayToolbars(in: window, insideFloatingBar: false)
+    }
+
+    /// The same sweep, every frame for `seconds`. One pass is not enough: the stray
+    /// bar is built somewhere inside the keyboard's own animation, so a sweep timed
+    /// off the notification either runs before it exists or a few frames after it is
+    /// already on screen — which is the flash of two bars. Watching for it frame by
+    /// frame while the keyboard is moving takes it down before it is ever drawn.
+    func sweepStrayToolbars(for seconds: TimeInterval) {
+        hideStrayToolbars()
+        sweepUntil = max(sweepUntil, CACurrentMediaTime() + seconds)
+        guard sweeper == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(sweepTick))
+        link.add(to: .main, forMode: .common)
+        sweeper = link
+    }
+
+    @objc private func sweepTick() {
+        hideStrayToolbars()
+        guard CACurrentMediaTime() > sweepUntil else { return }
+        sweeper?.invalidate()
+        sweeper = nil
+    }
+
+    /// Stops the frame-by-frame sweep; the page is leaving and takes its bars with it.
+    func stopSweeping() {
+        sweeper?.invalidate()
+        sweeper = nil
+        sweepUntil = 0
+    }
+
+    private static func hideStrayToolbars(in view: UIView, insideFloatingBar: Bool) {
+        let name = String(describing: type(of: view))
+        if name == "UIKitToolbar" {
+            if !insideFloatingBar {
+                // Dropped below the screen rather than hidden. A healthy note has no
+                // toolbar of this kind at all — checked page by page, keyboard up and
+                // down — so this only ever moves the ghost; going by position keeps
+                // the bar's own views intact and drawable should the system ever have
+                // a use for them, which `isHidden` would not.
+                let drop = (view.window?.bounds.height ?? 1000) + 200
+                if view.transform.ty != drop {
+                    view.transform = CGAffineTransform(translationX: 0, y: drop)
+                }
+            }
+            return
+        }
+        let inside = insideFloatingBar || name == "FloatingBarContainerView"
+        for subview in view.subviews { hideStrayToolbars(in: subview, insideFloatingBar: inside) }
+    }
+}
+
+/// The bars are owned by UIKit and SwiftUI; this model only ever borrows them.
+private struct WeakView {
+    weak var view: UIView?
 }
 
 /// Invisible; its only job is giving `BarParkModel` a live window to search.
@@ -464,6 +589,7 @@ struct StopwatchFace: View {
 /// keyboard for free. Its metrics are measured off the live system bar so the
 /// swap reads as the same bar travelling up: 48pt capsules, 28pt side margins,
 /// 4pt between the pill's buttons.
+
 struct EditingToolbar: View {
     var stopwatch: StopwatchModel
     /// While the tutorial's walkthrough is running the bar holds back every button it

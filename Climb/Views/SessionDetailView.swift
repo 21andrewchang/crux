@@ -70,14 +70,25 @@ struct SessionDetailView: View {
     @State private var doomedRowCount = 0
     /// Attempts whose rows have been removed but whose deletion is still undoable.
     @State private var detached: [DetachedAttempt] = []
+    /// Where in the note this open should land — set when the note was opened from a
+    /// search result. Nil every other time, which is a note opened at its own start.
+    var opening: SessionOpening?
+    /// Whether that landing has happened. Once only: coming back to the note from the
+    /// attempt it just opened must not open it again.
+    @State private var didLand = false
+
     /// The tutorial's walkthrough. Built with the session rather than started on
     /// appearance, so the very first bar this page draws is already the right one.
     @State private var guide: TutorialGuide
 
-    init(session: ClimbSession, startsEditing: Bool = false, isOnboarding: Bool = false) {
+    init(session: ClimbSession,
+         startsEditing: Bool = false,
+         isOnboarding: Bool = false,
+         opening: SessionOpening? = nil) {
         self.session = session
         self.startsEditing = startsEditing
         self.isOnboarding = isOnboarding
+        self.opening = opening
         _guide = State(initialValue: TutorialGuide(session: session))
         // Before anything reads a page: a note written before the tabs kept its name
         // as its first line, and the header has to be handed it rather than the main
@@ -90,7 +101,9 @@ struct SessionDetailView: View {
         // walkthrough is taught on the main page and opens there instead, and a
         // session already ended opens on the last page: there is nothing left to log
         // in one, so it is opened to be read rather than written in.
-        _tab = State(initialValue: Self.openingTab(for: session))
+        // Arrived at from search, the note opens on the page the thing found is
+        // written on rather than where a session would start.
+        _tab = State(initialValue: opening?.tab ?? Self.openingTab(for: session))
     }
 
     /// Where the note opens. The walkthrough owns the main page; a finished session
@@ -156,6 +169,7 @@ struct SessionDetailView: View {
         .onAppear {
             if guide.isRunning { Haptics.warmUp() }
             barPark.onParkedVisibilityChange = { barModel.parkedVisible = $0 }
+            sweepStrayBars()
             // A note opened by the new-note button lands typing at its name, the way
             // Notes does — except the name is in the header now, not the first line.
             if startsEditing { isTitleFocused = true }
@@ -170,6 +184,9 @@ struct SessionDetailView: View {
         }
         // The name is the one thing above the tabs, so it saves on its own rather than
         // through a page's editor.
+        // Focusing the title is the one thing that summons the stray bar, so it is
+        // swept the moment the header takes or gives up the keyboard as well.
+        .onChange(of: isTitleFocused) { _, _ in sweepStrayBars(after: 0.4) }
         .onChange(of: session.title) {
             // A title is one line. `axis: .vertical` lets it wrap, which also lets
             // Return put a break in it — so the break is taken as the Done it meant.
@@ -215,11 +232,34 @@ struct SessionDetailView: View {
             } else {
                 barPark.parkBy(duration)
             }
+            // The keyboard is what makes SwiftUI build its second bar — see
+            // `hideStrayToolbars`. Swept as it moves, either way, and again a beat
+            // later: the toolbar is put up alongside the keyboard rather than with
+            // the notification that announces it.
+            sweepStrayBars(after: duration)
         }
         // Without this, the bottom bar would dodge the keyboard and briefly float
         // over it during focus transitions; the accessory already covers that case.
         .ignoresSafeArea(.keyboard)
+        // The page it opens on is handed over in the init. The rest of the arrival
+        // happens here, once the push has actually finished: the editor is laid out by
+        // then, and a sheet raised mid-transition is a sheet that never appears.
+        .task {
+            guard !didLand, let opening else { return }
+            didLand = true
+            try? await Task.sleep(for: .milliseconds(350))
+            if let reveal = opening.reveal {
+                editorController.reveal(reveal)
+            }
+            guard let attemptID = opening.attemptID else { return }
+            // A beat after the note has landed on the row, so the page is already at
+            // the right place when the player comes down over it.
+            try? await Task.sleep(for: .milliseconds(250))
+            openedAttemptStart = opening.start
+            openedAttemptID = attemptID
+        }
         .onDisappear {
+            barPark.stopSweeping()
             barPark.restore()
             barModel.isEditing = false
             barModel.isRestLocked = false
@@ -551,6 +591,13 @@ struct SessionDetailView: View {
         .sharedBackgroundVisibility(.hidden)
     }
 
+    /// Takes down the second bottom bar SwiftUI leaves behind whenever the keyboard
+    /// has been up: watched for frame by frame across the keyboard's own animation,
+    /// which is when the stray one turns up.
+    private func sweepStrayBars(after delay: TimeInterval = 0) {
+        barPark.sweepStrayToolbars(for: delay + 0.6)
+    }
+
     /// How far down a bar glyph is drawn for a step the walkthrough has not reached.
     private func lockedFade(_ isUnlocked: Bool) -> Double {
         isUnlocked ? 1 : TutorialGuide.lockedOpacity
@@ -723,4 +770,20 @@ private struct DetachedAttempt {
 /// Lets `UUID` drive `sheet(item:)` / `fullScreenCover(item:)`.
 extension UUID: @retroactive Identifiable {
     public var id: UUID { self }
+}
+
+/// Where a note should open, for the one caller that has an opinion about it: search.
+///
+/// A result is a place in a note — a page, and sometimes an attempt and a moment
+/// inside it — so opening one is not opening the note, it is arriving at that place.
+struct SessionOpening {
+    /// The page the thing found is written on.
+    var tab: NoteTab?
+    /// The thing itself, so the note can open folded over nothing and carry the page
+    /// to it — a climb comes up expanded, not as a name with its attempts shut away.
+    var reveal: NoteReveal?
+    /// The attempt a clip belongs to. Raised over the note as it lands.
+    var attemptID: UUID?
+    /// Where in that attempt's video the clip starts — the player opens parked there.
+    var start: TimeInterval?
 }

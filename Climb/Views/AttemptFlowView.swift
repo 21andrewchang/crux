@@ -101,7 +101,7 @@ struct AttemptFlowView: View {
         .interactiveDismissDisabled(phase == .processing || capture.status == .recording)
         .task {
             capture.onFinish = { url, stoppedAt in
-                ingest(url: url, stoppedAt: stoppedAt)
+                ingest(url: url, stoppedAt: stoppedAt, fromCamera: true)
             }
             await capture.prepare()
         }
@@ -378,7 +378,7 @@ struct AttemptFlowView: View {
                 phase = .capture
                 return
             }
-            ingest(url: url, stoppedAt: Date())
+            ingest(url: url, stoppedAt: Date(), fromCamera: false)
         }
     }
 
@@ -416,9 +416,15 @@ struct AttemptFlowView: View {
     /// the attempt's own page over it. The rest timer runs from `stoppedAt` — the
     /// moment the user hit stop, not the moment ingest ends — so the countdown the
     /// page opens on is already the real one.
-    private func ingest(url: URL, stoppedAt: Date) {
+    private func ingest(url: URL, stoppedAt: Date, fromCamera: Bool) {
         Task {
             let result = await VideoStore.ingest(recordingAt: url, attemptID: attemptID)
+            // A take filmed here also lands in Photos, the way any other video shot on
+            // the phone would. Videos pulled *out* of the library are already there.
+            if fromCamera {
+                let saved = VideoStore.directory.appendingPathComponent(result.video)
+                Task.detached { await PhotoLibraryExport.save(videoAt: saved) }
+            }
             await MainActor.run {
                 onCapture(CapturedAttempt(
                     videoFilename: result.video,

@@ -24,6 +24,8 @@ final class AttemptAttachment: NSTextAttachment, MarkerAttachment {
     var onTap: ((UUID) -> Void)?
     /// A tap on the name: closes the notes under this row and opens them again.
     var onToggleFold: ((UUID) -> Void)?
+    /// Delete, chosen from the row's own press-and-hold menu.
+    var onDelete: ((UUID) -> Void)?
     /// Whether anything is written under this row. With nothing there the card closes
     /// off at the bottom of the row instead of running on into them, and the name has
     /// nothing to fold.
@@ -92,6 +94,7 @@ final class AttemptRowViewProvider: NSTextAttachmentViewProvider {
             }
             row.onTap = { [weak attachment] in attachment?.onTap?(id) }
             row.onToggleFold = { [weak attachment] in attachment?.onToggleFold?(id) }
+            row.onDelete = { [weak attachment] in attachment?.onDelete?(id) }
             row.showNotes(attachment.hasNotes, folded: attachment.areNotesFolded)
             row.isHidden = attachment.isCollapsed
             attachment.rowView = row
@@ -118,6 +121,9 @@ final class AttemptRowViewProvider: NSTextAttachmentViewProvider {
 final class AttemptRowView: UIView {
     var onTap: (() -> Void)?
     var onToggleFold: (() -> Void)?
+    /// Chosen from the menu a press and hold puts up. The row goes out of the
+    /// document; the attempt behind it is only detached, so undo hands it back.
+    var onDelete: (() -> Void)?
 
     /// A dark dark grey — a step off the page, nowhere near a light card. The notes
     /// written under the row are drawn on the same ground by `BookmarkLayoutFragment`,
@@ -167,6 +173,11 @@ final class AttemptRowView: UIView {
         super.init(frame: frame)
         backgroundColor = .clear
         buildHierarchy()
+        // Press and hold for what the row can do. An interaction of the row's own
+        // rather than another branch of `handleTap`: the menu, its preview and the
+        // dismissal all come from the system this way. The text view behind it is
+        // told to keep its hands off a long press here — see `NoteTextView`.
+        addInteraction(UIContextMenuInteraction(delegate: self))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -408,6 +419,58 @@ final class AttemptRowView: UIView {
         playGlyph.isHidden = snapshot.thumbnail == nil
     }
 
+}
+
+extension AttemptRowView: UIContextMenuInteractionDelegate {
+    /// One item, and the one thing a row can't otherwise be told to do from the note
+    /// itself: get rid of it. Everything else the row does is a tap on one half of it.
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                configurationForMenuAtLocation location: CGPoint)
+        -> UIContextMenuConfiguration? {
+        UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            UIMenu(children: [
+                UIAction(title: "Delete Attempt",
+                         image: UIImage(systemName: "trash"),
+                         attributes: .destructive) { _ in self?.onDelete?() }
+            ])
+        }
+    }
+
+    /// The card lifts, not the whole line it sits on: the row's own rounded box, on
+    /// its own fill, so what rises under the menu is the thing the menu is about.
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration)
+        -> UITargetedPreview? {
+        cardPreview()
+    }
+
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                previewForDismissingMenuWithConfiguration configuration: UIContextMenuConfiguration)
+        -> UITargetedPreview? {
+        cardPreview()
+    }
+
+    /// The card as the menu lifts it: the row itself, on a platter painted its own
+    /// fill.
+    ///
+    /// The platter is the whole point of answering this at all. Left to the system it
+    /// is a background colour of the system's choosing, which on a black page is
+    /// black — the card arriving under the menu with its fill gone. Everything else
+    /// here is UIKit's: it takes the row away and puts it back on its own schedule,
+    /// and anything this side did to help — a drawn copy, the row faded out under it —
+    /// was a second schedule for the same view, which is where the flicker came from.
+    private func cardPreview() -> UITargetedPreview? {
+        guard window != nil, bounds.width > 0 else { return nil }
+        let parameters = UIPreviewParameters()
+        parameters.backgroundColor = Self.cardFill
+        // All four corners, whichever two the card happens to be masking: with the
+        // clips open it runs on below the row and only rounds its top, but the piece
+        // that lifts is the row alone and a card cut square at the bottom reads as
+        // torn.
+        parameters.visiblePath = UIBezierPath(roundedRect: bounds,
+                                              cornerRadius: Self.cardRadius)
+        return UITargetedPreview(view: self, parameters: parameters)
+    }
 }
 
 /// A word in a tinted capsule: the tag a climb heading used to wear, now the rating's.

@@ -35,6 +35,11 @@ struct ClimbApp: App {
         #endif
         PostHogSDK.shared.setup(config)
 
+        // Recordings made before the app started excluding them are still sitting in
+        // the backup. Sweeping once per launch, off the main thread, catches them
+        // without holding up the first frame.
+        Task.detached(priority: .utility) { VideoStore.excludeExistingVideosFromBackup() }
+
         // Shaking the phone is not an undo gesture here — the note carries its own
         // undo button, and a bag-jostle should never eat what was just typed.
         UIApplication.shared.applicationSupportsShakeToEdit = false
@@ -58,6 +63,6 @@ struct ClimbApp: App {
                 .preferredColorScheme(.dark)
                 .tint(.white)
         }
-        .modelContainer(for: [ClimbSession.self, Attempt.self, Climb.self])
+        .modelContainer(for: [ClimbSession.self, Attempt.self, Climb.self, NoteBlock.self])
     }
 }

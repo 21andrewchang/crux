@@ -40,25 +40,42 @@ struct SessionListView: View {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    /// Title and body both match, so searching finds a session by anything written in it.
-    private var visibleSessions: [ClimbSession] {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return ownSessions }
-        return ownSessions.filter { $0.searchText.localizedCaseInsensitiveContains(query) }
+    private var terms: SearchTerms { SearchTerms(searchText) }
+
+    /// What was typed, answered with the things themselves — the climbs, the clips and
+    /// the lines that match, not the sessions they happen to be written in. A session
+    /// is one of the four kinds of answer rather than the only one, because "blue v2"
+    /// and "hip movement" are questions about a problem and about a clip, and handing
+    /// back the note either was written in leaves the finding still to do.
+    private var results: [SearchResult] {
+        SessionSearch.results(for: searchText, in: ownSessions)
     }
 
-    /// One card per calendar week, newest first. Sessions keep the query's newest-first
-    /// order inside each week because `Dictionary(grouping:)` preserves input order.
-    private var weeks: [SessionWeek] {
-        let calendar = Calendar.current
-        let byWeek = Dictionary(grouping: visibleSessions) { session in
-            calendar.dateInterval(of: .weekOfYear, for: session.createdAt)?.start ?? session.createdAt
-        }
-        return byWeek.keys.sorted(by: >).map { start in
-            SessionWeek(id: start,
-                        title: Self.weekTitle(startingAt: start, calendar: calendar),
-                        sessions: byWeek[start] ?? [])
-        }
+    /// Weeks run Monday to Sunday whatever the locale says, because that is how the
+    /// list is read here: the week is the training block, and it starts on Monday.
+    private var calendar: Calendar {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        return calendar
+    }
+
+    /// The two lists the page is. Not one card per week: a week you are not in is
+    /// history, and forty of them stacked up is a filing cabinet rather than a list.
+    /// What is live gets its own card; everything before it goes in one.
+    private var weekStart: Date? {
+        calendar.dateInterval(of: .weekOfYear, for: Date())?.start
+    }
+
+    /// This week's sessions, newest first — the query's order, kept.
+    private var thisWeek: [ClimbSession] {
+        guard let weekStart else { return ownSessions }
+        return ownSessions.filter { $0.createdAt >= weekStart }
+    }
+
+    /// Everything before this week, in one run, newest first.
+    private var history: [ClimbSession] {
+        guard let weekStart else { return [] }
+        return ownSessions.filter { $0.createdAt < weekStart }
     }
 
     var body: some View {
@@ -68,8 +85,13 @@ struct SessionListView: View {
                 // list is still a list — with the emptiness said inside it, under the
                 // card, rather than in place of the whole page. A search that finds
                 // nothing is the one thing that replaces it: the card is not a result.
-                if isSearching, visibleSessions.isEmpty {
-                    noResultsState
+                if isSearching {
+                    let results = results
+                    if results.isEmpty {
+                        noResultsState
+                    } else {
+                        SearchResultsView(terms: terms, results: results)
+                    }
                 } else if ownSessions.isEmpty, !Goals.isPinned {
                     // Nothing pinned above them, so an empty list is an empty page.
                     emptyState
@@ -182,12 +204,12 @@ struct SessionListView: View {
     }
 
     /// Notes' list: rows sit in rounded cards on a grouped background, no separators —
-    /// one card per week, newest week first.
+    /// this week in one card, everything before it in another.
     /// `.insetGrouped` already supplies Notes' exact fills — `systemGroupedBackground`
     /// behind, `secondarySystemGroupedBackground` for the card.
     private var list: some View {
         List {
-            // Above every week, headerless: the goal is not something that happened in
+            // Above both cards, headerless: the goal is not something that happened in
             // a week, it is what the weeks are for.
             if Goals.isPinned, !isSearching, let goal {
                 Section {
@@ -207,31 +229,43 @@ struct SessionListView: View {
                         .listRowSeparator(.hidden)
                 }
             }
-            ForEach(weeks) { week in
-                Section {
-                    ForEach(week.sessions) { session in
-                        NavigationLink {
-                            SessionDetailView(session: session)
-                        } label: {
-                            row(for: session)
-                        }
-                    }
-                    .onDelete { delete($0, from: week.sessions) }
-                    .listRowSeparator(.hidden)
-                } header: {
-                    Text(week.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .textCase(nil)
-                        // Insets are relative to the card, so zero leading lines the
-                        // header up with the card's edge and the navigation title.
-                        .listRowInsets(EdgeInsets(top: 16, leading: 0, bottom: 8, trailing: 0))
-                }
+            // The week you are in, then everything else. A card with nothing in it is
+            // not drawn: an empty "This Week" is a reproach, and the list is a record
+            // rather than a chart of what is missing.
+            if !thisWeek.isEmpty {
+                card("This Week", sessions: thisWeek)
+            }
+            if !history.isEmpty {
+                card("History", sessions: history)
             }
         }
         .listStyle(.insetGrouped)
     }
 
+    /// One titled card of session rows.
+    private func card(_ title: String, sessions rows: [ClimbSession]) -> some View {
+        Section {
+            ForEach(rows) { session in
+                NavigationLink {
+                    SessionDetailView(session: session)
+                } label: {
+                    row(for: session)
+                }
+            }
+            .onDelete { delete($0, from: rows) }
+            .listRowSeparator(.hidden)
+        } header: {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .textCase(nil)
+                // Insets are relative to the card, so zero leading lines the header up
+                // with the card's edge and the navigation title.
+                .listRowInsets(EdgeInsets(top: 16, leading: 0, bottom: 8, trailing: 0))
+        }
+    }
+
+    /// Title and date on one line, the note's first line under it.
     private func row(for session: ClimbSession) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -367,32 +401,5 @@ struct SessionListView: View {
             modelContext.delete(session)
         }
         try? modelContext.save()
-    }
-}
-
-/// A week's worth of sessions, keyed by the day the week starts on.
-private struct SessionWeek: Identifiable {
-    let id: Date
-    let title: String
-    let sessions: [ClimbSession]
-}
-
-private extension SessionListView {
-    /// "This Week" / "Last Week", then a date range — "Aug 3 – 9", carrying the year once
-    /// the week falls outside this one.
-    static func weekTitle(startingAt start: Date, calendar: Calendar) -> String {
-        let currentWeek = calendar.dateInterval(of: .weekOfYear, for: Date())?.start
-        if start == currentWeek { return "This Week" }
-        if let previous = currentWeek.flatMap({ calendar.date(byAdding: .weekOfYear, value: -1, to: $0) }),
-           start == previous {
-            return "Last Week"
-        }
-
-        let end = calendar.date(byAdding: .day, value: 6, to: start) ?? start
-        let sameYear = calendar.isDate(start, equalTo: Date(), toGranularity: .year)
-        let style = sameYear
-            ? Date.IntervalFormatStyle().month(.abbreviated).day()
-            : Date.IntervalFormatStyle().year().month(.abbreviated).day()
-        return (start..<end).formatted(style)
     }
 }

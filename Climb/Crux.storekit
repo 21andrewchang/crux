@@ -4,7 +4,7 @@
   "products": [],
   "settings": {
     "_applicationInternalID": "6740000001",
-    "_developerTeamID": "L46526JFTP",
+    "_developerTeamID": "76548A5QQF",
     "_failTransactionsEnabled": false,
     "_lastSynchronizedDate": 0,
     "_locale": "en_US",
@@ -38,7 +38,7 @@
               "locale": "en_US"
             }
           ],
-          "productID": "com.andrewchang.Crux.pro.yearly",
+          "productID": "com.627b8d.Crux.pro.yearly",
           "recurringSubscriptionPeriod": "P1Y",
           "referenceName": "Crux Pro Yearly",
           "subscriptionGroupID": "20000001",
@@ -60,7 +60,7 @@
               "locale": "en_US"
             }
           ],
-          "productID": "com.andrewchang.Crux.pro.monthly",
+          "productID": "com.627b8d.Crux.pro.monthly",
           "recurringSubscriptionPeriod": "P1M",
           "referenceName": "Crux Pro Monthly",
           "subscriptionGroupID": "20000001",

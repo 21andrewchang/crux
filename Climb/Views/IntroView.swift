@@ -46,20 +46,25 @@ struct IntroView: View {
     /// on its own, and a page that moves is worth spending early: it comes while
     /// somebody is still deciding whether to keep tapping, not after they have decided.
     ///
-    /// Verb-first, the way the ones worth copying are: reach, analyze, learn. The verb
-    /// is what the user does, not what the app does — nobody wants a feature, they want
-    /// the thing on the other side of it.
+    /// Verb-first past the opener, the way the ones worth copying are: improve,
+    /// analyze, reach. The verb is what the user does, not what the app does — nobody
+    /// wants a feature, they want the thing on the other side of it. Title case
+    /// throughout, so four lines that are each making a claim look like claims.
     private static let slides = [
         // "The", not "a": a positioning line that concedes it is one of many is not a
-        // positioning line. And the sport is named because that is the differentiator
-        // doing the work — a journal that knows your goals could be any notes app.
-        Slide(headline: "The bouldering journal that knows your goals", art: .log),
-        Slide(headline: "Learn technique faster by reviewing your clips", art: .clip),
-        Slide(headline: "Analyze your training load and track progress", art: .review),
+        // positioning line. The differentiator is the goals rather than the sport —
+        // the note under it is plainly a climbing note, so the line does not have to
+        // spend a word saying so.
+        Slide(headline: "The Journal That Knows Your Goals", art: .log),
+        Slide(headline: "Improve Faster By Reviewing Clips", art: .clip),
+        Slide(headline: "Analyze Sessions\nAnd Track Progress", art: .review),
         // No "with Crux" on the end. Slide one already said whose journal this is, and
         // the closer is the one line that should be about them and not about us — the
         // shortest and hardest of the four, with the chart under it doing the arguing.
-        Slide(headline: "Reach your dream grade with consistent growth", art: .curve),
+        // Two lines, broken where it is written rather than where it happens to fit:
+        // the promise and the method are one each, and the chart under them is the
+        // same pair — the line that goes up, and the year spent guessing.
+        Slide(headline: "Reach Your Goals\nImprove Consistently", art: .curve),
     ]
 
     private var isLast: Bool { index == Self.slides.count - 1 }
@@ -132,12 +137,18 @@ struct IntroView: View {
                 .foregroundStyle(Color.paper)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 24)
-                .padding(.top, 36)
-                // Held open to the tallest headline — three lines at 34 point, plus the
-                // padding above them — so the shot under it starts at the same height
-                // on all four and the page does not jump as it turns. Two-line slides
-                // pay for the third line in white space rather than in movement.
-                .frame(height: 180, alignment: .topLeading)
+                // Clear of the progress pills rather than tucked under them: the pills
+                // are 4 point of chrome and the headline is the page, so the gap has to
+                // read as a gap and not as a stack.
+                .padding(.top, 88)
+                // Held open to two lines plus the padding above them — every headline
+                // is two lines now, three of them broken by hand — so the shot under it
+                // starts at the same height on all four and the page does not jump as
+                // it turns. Room for a third line was room nothing used, and it read as
+                // the crop having drifted away from the words. A headline that does run
+                // to three lines will reach into the top of its art rather than push it
+                // down, which is the trade: shorten the line instead.
+                .frame(height: 192, alignment: .topLeading)
 
             Spacer(minLength: 0)
 
@@ -211,27 +222,45 @@ struct IntroView: View {
     /// gap on it is a fixed number of points in the shot's own coordinates, so a wider
     /// phone gets a larger copy of the same picture instead of a differently spaced
     /// one — which is exactly what `scaledToFit` was already doing to the JPEG.
+    /// `zoom` above 1 lets a slide run past the box the others fit inside — the shot
+    /// keeps its shape and its spacing, it is simply drawn larger and allowed over the
+    /// side margins. Only worth it on a crop whose content sits small inside its own
+    /// frame, which is why it is per-slide rather than a number in `fitted` itself.
     private func fitted<Content: View>(_ crop: CGSize,
+                                       zoom: CGFloat = 1,
                                        @ViewBuilder content: () -> Content) -> some View {
         // Built before the reader rather than inside it: a non-escaping builder cannot
         // be carried into one.
         let slide = content()
         return GeometryReader { proxy in
-            let scale = min(proxy.size.width / crop.width, proxy.size.height / crop.height)
+            let scale = min(proxy.size.width / crop.width, proxy.size.height / crop.height) * zoom
             slide
                 .frame(width: crop.width, height: crop.height, alignment: .topLeading)
-                .scaleEffect(scale)
+                // Anchored to the top, not the middle. Scaling does not change what
+                // the view is laid out as — the box stays the crop's full height — so
+                // a centred scale leaves the shrunk picture floating in the middle of
+                // that box, and topping the box afterwards only moves the empty half
+                // above it. Both ends have to be the top for the crop to sit where the
+                // headline leaves off.
+                .scaleEffect(scale, anchor: .top)
                 // Scaling does not change what the view is laid out as, so it is put
-                // back into the full box afterwards to centre the way the shot does.
-                .frame(width: proxy.size.width, height: proxy.size.height)
+                // back into the full box afterwards — topped rather than centred. The
+                // slack in the box belongs under the shot, not split around it: a crop
+                // that starts just below the headline reads as the page continuing,
+                // and one floating in the middle of the gap reads as a picture of a
+                // page. What is left over falls to the bottom, where the button is.
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 24)
         .padding(.bottom, Self.footerRoom)
     }
 
-    /// What the button and its padding take off the bottom of the page.
-    static let footerRoom: CGFloat = 76
+    /// What the button and its padding take off the bottom of the page — its 20 above,
+    /// the 56 of the capsule itself, and the 28 holding it up off the home indicator.
+    /// The art centres in what is left, so this is also the knob that decides how high
+    /// on the page every visual sits.
+    static let footerRoom: CGFloat = 136
 
     // MARK: - Chrome
 
@@ -265,6 +294,9 @@ struct IntroView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 24)
         .padding(.top, 20)
+        // Up off the home indicator rather than sat on it: the safe area is the line
+        // the button must not cross, not the line it should touch.
+        .padding(.bottom, 28)
         // The phone is running underneath this, so the buttons get ground to sit on:
         // clear where the screenshot is still being read, solid by the time it reaches
         // the words.
@@ -351,6 +383,11 @@ private struct ClipSlide: View {
     /// shorter the run, the more the top of the video reads as a horizon.
     private static let fade: CGFloat = 350
     private static let lift: CGFloat = 150
+    /// How far up the fade is slid from the top of the footage. The lift is 150 of
+    /// video above the page, so a shift inside that only moves where the black lets
+    /// go — the footage arrives higher up the page without the top of it ever being
+    /// uncovered.
+    private static let fadeShift: CGFloat = 70
 
     private static let url = Bundle.main.url(forResource: "introClip", withExtension: "mp4")
 
@@ -373,7 +410,12 @@ private struct ClipSlide: View {
         ZStack(alignment: .bottom) {
             ZStack(alignment: .top) {
                 PlayerSurface(player: player)
-                fade
+                    // Into the frame a little. The clip already fills the page, so this
+                    // buys nothing at the edges — what it buys is the climber, who is
+                    // the thing the slide is of, at the size the other slides draw
+                    // their subject.
+                    .scaleEffect(1.12)
+                fade.offset(y: -Self.fadeShift)
             }
             // Down to the physical bottom of the phone, past the home indicator: the
             // footage is the page here, and a strip of black under it would read as
@@ -395,11 +437,14 @@ private struct ClipSlide: View {
 
             playbar
                 .padding(.horizontal, 16)
-                // Clear of the Continue button by the same gap the button keeps from
-                // the foot of the page. Measured from the page's own bottom, which is
-                // still the safe one — the footage goes under the bar, the bar's
-                // furniture does not.
-                .padding(.bottom, IntroView.footerRoom + 20)
+                // Its own measure rather than the shots' clearance. `footerRoom` is
+                // how high a screenshot floats over the button, and it went up so the
+                // three fitted slides would sit higher; the bar is furniture on top of
+                // footage that runs to the glass, and following the shots up only
+                // stranded it in the middle of the picture. Measured from the page's
+                // own bottom, which is still the safe one — the footage goes under the
+                // bar, the bar's furniture does not.
+                .padding(.bottom, 96)
         }
         .animation(.smooth(duration: 0.3), value: showsNote)
         // The note landing is the moment the whole slide is built around, and it is

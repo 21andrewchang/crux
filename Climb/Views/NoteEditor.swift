@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+/// A place in the note that can be asked for by name — what a search result opens at.
+///
+/// A result is not a note, it is somewhere inside one, and three kinds of somewhere
+/// cover all of them: the climb it names, the attempt a clip was written on, or the
+/// line the words are on.
+enum NoteReveal: Equatable {
+    case climb(String)
+    case attempt(UUID)
+    case line(String)
+}
+
 /// Imperative handle onto the live text view, so the rest of the app can insert an
 /// attempt at the cursor or refresh rows without owning the editor's state.
 @Observable
@@ -87,6 +98,12 @@ final class NoteEditorController {
     /// session being ended does to each of its documents.
     func collapseClimbs() {
         coordinator?.collapseClimbs()
+    }
+
+    /// Opens the note at one place in it: whatever is folded over that place is
+    /// opened, and the page is brought to it.
+    func reveal(_ target: NoteReveal) {
+        coordinator?.reveal(target)
     }
 
     func endEditing() {
@@ -191,6 +208,14 @@ struct NoteEditor: UIViewRepresentable {
         textView.isLinkTap = { [weak coordinator = context.coordinator] point in
             coordinator?.attemptRow(at: point) != nil || coordinator?.quoteLink(at: point) != nil
         }
+        textView.isRowTouch = { [weak coordinator = context.coordinator] point in
+            coordinator?.attemptRow(at: point) != nil
+        }
+        // A press and hold on a row is that row's menu, never the start of a drag: a
+        // row is an attachment, and the drag it offers is the attachment itself —
+        // which, having no image of its own to show, lifts off the page as the blank
+        // document icon UIKit falls back to.
+        textView.textDragDelegate = context.coordinator
 
         context.coordinator.textView = textView
         textView.onResize = { [weak coordinator = context.coordinator] in
@@ -947,6 +972,10 @@ struct NoteEditor: UIViewRepresentable {
             attachment.snapshotProvider = { [weak self] id in self?.snapshot(for: id) }
             attachment.onTap = { [weak self] id in self?.parent.onOpenAttempt(id) }
             attachment.onToggleFold = { [weak self] id in self?.toggleNotesFold(for: id) }
+            // Exactly what Delete on the attempt's own page does: the row leaves the
+            // document, `onChange` detaches the attempt behind it, and Undo in the
+            // corner puts both back.
+            attachment.onDelete = { [weak self] id in self?.removeMarker(for: id) }
             return attachment
         }
 
@@ -2289,6 +2318,102 @@ struct NoteEditor: UIViewRepresentable {
             syncTypingAttributes()
         }
 
+        /// Arriving at one place in the note, which is what opening a search result is.
+        ///
+        /// A found thing has to be *there* when the page lands on it: a session that
+        /// has been ended comes back with every climb folded and every row closed, so
+        /// the climb somebody just searched for would open as a name with nothing
+        /// under it. Whatever is folded over the thing is opened first, and only then
+        /// is the page carried to it.
+        func reveal(_ target: NoteReveal) {
+            guard let textView else { return }
+            let storage = textView.textStorage
+            guard storage.length > 0, let found = range(of: target, in: storage) else { return }
+
+            var opened = false
+            if let heading = headingLine(above: found.location, in: storage),
+               storage.attribute(NoteDocument.foldedHeading, at: heading.location,
+                                 effectiveRange: nil) != nil {
+                storage.removeAttribute(NoteDocument.foldedHeading, range: heading)
+                opened = true
+            }
+            // A clip is written under its row, and every row comes up closed.
+            if case .attempt(let id) = target { opened = openNotes(for: id) || opened }
+
+            if opened {
+                isRestyling = true
+                let restyle = { NoteDocument.applyStyles(to: storage) }
+                if let note = textView as? NoteTextView {
+                    note.holdingScrollPosition(restyle)
+                } else {
+                    restyle()
+                }
+                isRestyling = false
+            }
+            // After the hold has let go — it pins the page for a turn of the run loop,
+            // which is exactly what a scroll started inside it would be fighting.
+            DispatchQueue.main.async { [weak textView] in
+                (textView as? NoteTextView)?.scroll(toRange: found)
+            }
+        }
+
+        /// Where a reveal's target sits in the document.
+        private func range(of target: NoteReveal, in storage: NSTextStorage) -> NSRange? {
+            let text = storage.string as NSString
+            switch target {
+            case .climb(let name):
+                let wanted = NoteDocument.headingName(name).lowercased()
+                var found: NSRange?
+                storage.enumerateAttribute(NoteDocument.climbHeader,
+                                           in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+                    guard value != nil, found == nil else { return }
+                    let line = text.lineRange(for: NSRange(location: range.location, length: 0))
+                    guard NoteDocument.headingName(text.substring(with: line)).lowercased() == wanted else { return }
+                    found = line
+                    stop.pointee = true
+                }
+                return found
+            case .attempt(let id):
+                return markerRange(for: id)
+            case .line(let words):
+                let found = text.range(of: words)
+                return found.location == NSNotFound ? nil : found
+            }
+        }
+
+        /// The heading a location is filed under — either kind, whichever is nearest
+        /// above it, since either one ends the group before it.
+        private func headingLine(above location: Int, in storage: NSTextStorage) -> NSRange? {
+            let text = storage.string as NSString
+            let above = NSRange(location: 0, length: min(location + 1, storage.length))
+            guard above.length > 0 else { return nil }
+            var found: NSRange?
+            for key in [NoteDocument.climbHeader, NoteDocument.sectionHeader] {
+                storage.enumerateAttribute(key, in: above) { value, range, _ in
+                    guard value != nil else { return }
+                    let line = text.lineRange(for: NSRange(location: range.location, length: 0))
+                    if found == nil || line.location > found!.location { found = line }
+                }
+            }
+            return found
+        }
+
+        /// Opens one row's notes, and says whether that changed anything.
+        private func openNotes(for id: UUID) -> Bool {
+            guard let storage = textView?.textStorage else { return false }
+            var opened = false
+            storage.enumerateAttribute(.attachment,
+                                       in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+                guard let attempt = value as? AttemptAttachment, attempt.attemptID == id else { return }
+                if attempt.areNotesFolded {
+                    attempt.areNotesFolded = false
+                    opened = true
+                }
+                stop.pointee = true
+            }
+            return opened
+        }
+
         /// Folds the group under a heading down to just the heading, or unfolds it.
         /// A restyle, not an edit: the text is untouched, so nothing is persisted and
         /// nothing lands on the undo stack — and a reopened note starts unfolded.
@@ -2708,6 +2833,29 @@ extension NoteEditor.Coordinator: NSTextLayoutManagerDelegate {
     }
 }
 
+extension NoteEditor.Coordinator: UITextDragDelegate {
+    /// Nothing a component is made of leaves the page by being dragged off it. Words
+    /// still can: only a drag that has hold of a row, a card or a heading's marker is
+    /// refused, and refusing is returning it no items to carry.
+    func textDraggableView(_ textDraggableView: any UIView & UITextDraggable,
+                           itemsForDrag dragRequest: any UITextDragRequest) -> [UIDragItem] {
+        guard let textView else { return [] }
+        let start = textView.offset(from: textView.beginningOfDocument, to: dragRequest.dragRange.start)
+        let end = textView.offset(from: textView.beginningOfDocument, to: dragRequest.dragRange.end)
+        let range = NSRange(location: start, length: max(0, end - start))
+        guard range.location >= 0, NSMaxRange(range) <= textView.textStorage.length else { return [] }
+
+        var holdsMarker = false
+        textView.textStorage.enumerateAttribute(.attachment, in: range) { value, _, stop in
+            if value is MarkerAttachment {
+                holdsMarker = true
+                stop.pointee = true
+            }
+        }
+        return holdsMarker ? [] : dragRequest.suggestedItems
+    }
+}
+
 extension NoteEditor.Coordinator: UIGestureRecognizerDelegate {
     /// Only touches on an attempt's row, on one of its note lines, or on a heading's
     /// fold target reach the recognizer — everything a component is made of is a link
@@ -2741,6 +2889,11 @@ final class NoteTextView: UITextView {
     /// by the coordinator, which is the side that knows the document.
     var isLinkTap: ((CGPoint) -> Bool)?
 
+    /// Whether a point lands on an attempt's row. A press and hold there belongs to
+    /// the row's own context menu, so the text view's long presses — the loupe, the
+    /// selection, the edit menu — stand down on it.
+    var isRowTouch: ((CGPoint) -> Bool)?
+
     /// A tap on a link is not a tap into the text. The recognizer that follows the
     /// link is left alone; every other tap recognizer on this view — the ones that
     /// focus the page and drop the caret where you touched — is refused there, so
@@ -2749,6 +2902,10 @@ final class NoteTextView: UITextView {
         if gestureRecognizer is UITapGestureRecognizer,
            gestureRecognizer.name != Self.markerTapName,
            isLinkTap?(gestureRecognizer.location(in: self)) == true {
+            return false
+        }
+        if gestureRecognizer is UILongPressGestureRecognizer,
+           isRowTouch?(gestureRecognizer.location(in: self)) == true {
             return false
         }
         return super.gestureRecognizerShouldBegin(gestureRecognizer)
@@ -2997,6 +3154,26 @@ final class NoteTextView: UITextView {
     func resolveFullLayout() {
         guard let layout = textLayoutManager else { return }
         layout.ensureLayout(for: layout.documentRange)
+    }
+
+    /// Carries the page to a range, landing it just under the head of the note rather
+    /// than under the status bar — the same strip a caret is kept inside. Animated,
+    /// because arriving somewhere in the middle of a note is a move through it: the
+    /// note scrolls to the climb in front of you instead of being replaced by it.
+    func scroll(toRange range: NSRange) {
+        let end = offset(from: beginningOfDocument, to: endOfDocument)
+        guard let start = position(from: beginningOfDocument, offset: min(range.location, end)) else { return }
+        let rect = caretRect(for: start)
+        guard rect.origin.y.isFinite, rect.height > 0 else { return }
+
+        let lowest = -contentInset.top
+        let highest = max(lowest, contentSize.height + contentInset.bottom - bounds.height)
+        let target = min(max(rect.minY - contentInset.top - 12, lowest), highest)
+        guard abs(target - contentOffset.y) > 1 else { return }
+
+        programmaticScroll = true
+        setContentOffset(CGPoint(x: contentOffset.x, y: target), animated: true)
+        programmaticScroll = false
     }
 
     /// Clamped to what the content currently allows: if an edit genuinely made

@@ -188,6 +188,20 @@ struct ProfileView: View {
     /// and not the grade the chart just gave you.
     private static let headline = "Unlock Crux to start improving"
 
+    /// The way off the profile when there is nothing to buy: the same button in the
+    /// same place the purchase footer's Continue sat, without the rows above it.
+    private var freeContinue: some View {
+        Button(action: Self.restartsForDevelopment ? onboarding.reset : onFinish) {
+            Text("Continue")
+                .font(.headline)
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(Color.paper, in: .capsule)
+        }
+        .buttonStyle(.plain)
+    }
+
     /// Where the chart-and-grades block sits, as a drop from the top of the column.
     ///
     /// Centred on the chart alone while the chart is all there is to look at, then
@@ -327,22 +341,38 @@ struct ProfileView: View {
             // price is what moves you from one to the other; naming what is actually
             // being bought — the record, and getting there quicker for having kept it —
             // is both the honest framing and the one that sells.
-            Text(Self.headline)
-                .font(.system(size: 21, weight: .semibold))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 20)
-                .opacity(finished ? 1 : 0)
-                .animation(.easeInOut(duration: 0.45), value: finished)
+            // Only when there is something to buy. It is a sentence about the purchase,
+            // so with the wall off it is not a line to reword but a line with nothing
+            // left to say — and the gap it held goes with it rather than staying open.
+            if Onboarding.showsPaywall {
+                Text(Self.headline)
+                    .font(.system(size: 21, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 20)
+                    .opacity(finished ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.45), value: finished)
+            }
 
             // The asking, on the same screen as the thing being asked for. It arrives
             // last, under a gap that has just been drawn twice over — once as a shape
             // and once as two numbers — so the price is read against that rather than
             // against a page break. Nothing is written over it: a line of copy between
             // the grades and the plans was saying what the chart had just said better.
-            PurchaseFooter(plan: $plan, onPurchase: onFinish,
-                           replay: Self.restartsForDevelopment ? onboarding.reset : nil)
+            // With the wall off the profile still ends on a button — it is the last
+            // screen of the first run either way. What changes is only what the button
+            // costs: the plans and their small print are gone and Continue opens the
+            // app. Everything behind them — the store, the products, the purchase — is
+            // untouched, waiting on the flag rather than removed.
+            Group {
+                if Onboarding.showsPaywall {
+                    PurchaseFooter(plan: $plan, onPurchase: onFinish,
+                                   replay: Self.restartsForDevelopment ? onboarding.reset : nil)
+                } else {
+                    freeContinue
+                }
+            }
                 .opacity(finished ? 1 : 0)
                 .offset(y: finished ? 0 : 16)
                 .animation(.spring(response: 0.6, dampingFraction: 0.88), value: finished)
