@@ -47,6 +47,9 @@ struct AttemptFlowView: View {
     @State private var importProgress: Double?
     /// The import in flight, kept so Cancel can actually stop it.
     @State private var importJob: Progress?
+    /// Up when the shutter is pressed with a rest still running: recording now is
+    /// what cuts the countdown short, so it is the shutter that asks.
+    @State private var isConfirmingEarlyAttempt = false
 
     var body: some View {
         ZStack {
@@ -83,6 +86,15 @@ struct AttemptFlowView: View {
             }
         }
         .animation(.smooth(duration: 0.3), value: phase)
+        // Asked here rather than at the camera button in the note: opening the camera
+        // costs nothing — rolling on a rest that is still running is the thing worth a
+        // second look, and the clock keeps counting behind this until it is answered.
+        .alert("Still Resting", isPresented: $isConfirmingEarlyAttempt) {
+            Button("Cancel", role: .cancel) {}
+            Button("Yes", role: .destructive) { capture.startRecording() }
+        } message: {
+            Text("Are you sure you want to start an attempt?")
+        }
         // Swiping the sheet away is fine wherever nothing is on the line: the idle
         // camera, and the review page, where the attempt is already saved. Only a
         // recording in flight — or the ingest right after it — holds the sheet.
@@ -116,10 +128,10 @@ struct AttemptFlowView: View {
             VStack(spacing: 0) {
                 captureTopBar
                 Spacer()
-                if !capture.zoomOptions.isEmpty {
-                    zoomPicker
-                        .padding(.bottom, 22)
-                }
+                // The shutter has a row to itself, over the row of everything else the
+                // page can do — nothing sits beside the thing the page is for.
+                recordButton
+                    .padding(.bottom, 26)
                 bottomControls
                     .padding(.bottom, 32)
             }
@@ -182,41 +194,60 @@ struct AttemptFlowView: View {
         .padding(.top, 14)
     }
 
-    /// The shutter, with the Photos import sitting where Camera keeps its library
-    /// thumbnail. The trailing spacer is the picker's mirror image, so the shutter
-    /// stays centred on the screen rather than on what's left of the row.
+    /// The row under the shutter, built like the note's own bottom bar so the camera
+    /// wears the same furniture: a pill of buttons at the leading edge, the rest clock
+    /// at the trailing one, 28pt margins and one 48pt height across both.
     private var bottomControls: some View {
-        HStack {
-            libraryButton
-            Spacer()
-            recordButton
-            Spacer()
-            Color.clear.frame(width: libraryButtonSize, height: libraryButtonSize)
-        }
-        .padding(.horizontal, 32)
-    }
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 10) {
+                HStack(spacing: 4) {
+                    // Pulls an attempt in from Photos for climbs someone else filmed,
+                    // or that were shot before the app was open. It lands in exactly
+                    // the same place a recording does: ingested, saved, and opened on
+                    // its own page.
+                    Button {
+                        showingLibrary = true
+                    } label: {
+                        barGlyph("photo.on.rectangle")
+                            .frame(width: barSlotWidth("photo.on.rectangle"), height: 48)
+                            .contentShape(.rect)
+                    }
+                    // Nothing to import onto mid-take; the shutter owns the screen
+                    // while it runs. Dimmed rather than dropped, so the pill keeps
+                    // its footprint either way.
+                    .opacity(capture.status == .recording ? 0.3 : 1)
+                    .allowsHitTesting(capture.status != .recording)
 
-    private var libraryButtonSize: CGFloat { 54 }
+                    // The lens stop as one slot in the pill rather than a strip of
+                    // discs over it: where the lens is now, and a tap steps to the
+                    // next one, wrapping at the longest. Always in the row — the
+                    // stops arrive with the session, and a button appearing a beat
+                    // after the bar it belongs to reads as the bar twitching.
+                    Button(action: cycleZoom) {
+                        Text(zoomLabel(capture.zoom, selected: true))
+                            // The rest capsule's own face, so the two read as one
+                            // set rather than a small label beside a big clock.
+                            .font(.system(size: 19, weight: .semibold).monospacedDigit())
+                            .frame(width: zoomSlotWidth, height: 48)
+                            .contentShape(.rect)
+                    }
+                    .allowsHitTesting(!capture.zoomOptions.isEmpty)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .animation(.smooth(duration: 0.2), value: capture.status)
+                .animation(.snappy(duration: 0.2), value: capture.zoom)
+                .sensoryFeedback(.selection, trigger: capture.zoom)
 
-    /// Pulls an attempt in from Photos for climbs someone else filmed, or that were
-    /// shot before the app was open. It lands in exactly the same place a recording
-    /// does: ingested, saved, and opened on its own page.
-    private var libraryButton: some View {
-        Button {
-            showingLibrary = true
-        } label: {
-            Image(systemName: "photo.on.rectangle")
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: libraryButtonSize, height: libraryButtonSize)
-                .glassEffect(.regular, in: .circle)
-                .contentShape(.circle)
+                Spacer()
+
+                // A readout, not a button: its duration panel is hosted by the note
+                // under this sheet, so a tap would open it out of sight.
+                TimerCapsule(stopwatch: stopwatch, isInteractive: false)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 28)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        // Nothing to import onto mid-take; the shutter owns the screen while it runs.
-        .opacity(capture.status == .recording ? 0 : 1)
-        .disabled(capture.status == .recording)
-        .animation(.smooth(duration: 0.2), value: capture.status)
         .sheet(isPresented: $showingLibrary) {
             VideoLibraryPicker { provider in
                 showingLibrary = false
@@ -226,6 +257,15 @@ struct AttemptFlowView: View {
             }
             .ignoresSafeArea()
         }
+    }
+
+    /// Wide enough for ".5×" and "10×" alike at the face's size, so stepping through
+    /// the stops never resizes the pill.
+    private var zoomSlotWidth: CGFloat { 52 }
+
+    /// A rest is on the clock and has not run out — the state the shutter asks about.
+    private var isResting: Bool {
+        stopwatch.hasStarted && stopwatch.remaining(at: Date()) > 0
     }
 
     /// What sits over the black between picking a video and the attempt page. A
@@ -265,6 +305,8 @@ struct AttemptFlowView: View {
             if recording {
                 phase = .processing
                 capture.stopRecording()
+            } else if isResting {
+                isConfirmingEarlyAttempt = true
             } else {
                 capture.startRecording()
             }
@@ -284,35 +326,12 @@ struct AttemptFlowView: View {
         .animation(.bouncy(duration: 0.28), value: capture.status)
     }
 
-    /// Native-style lens stops: the selected one sits on a blurred disc with a yellow "×".
-    /// The blur is a plain material *behind* the label — glass would sit over it and smear
-    /// the digits.
-    private var zoomPicker: some View {
-        HStack(spacing: 0) {
-            ForEach(capture.zoomOptions, id: \.self) { option in
-                let selected = capture.zoom == option
-                Button {
-                    capture.setZoom(option)
-                } label: {
-                    Text(zoomLabel(option, selected: selected))
-                        .font(.system(size: selected ? 17 : 15, weight: .semibold))
-                        .foregroundStyle(selected ? Color.yellow : .white)
-                        .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
-                        .frame(width: 46, height: 46)
-                        .background {
-                            if selected {
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                                    .environment(\.colorScheme, .dark)
-                            }
-                        }
-                        .contentShape(.circle)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .animation(.snappy(duration: 0.2), value: capture.zoom)
-        .sensoryFeedback(.selection, trigger: capture.zoom)
+    /// Next stop along, back to the widest after the longest.
+    private func cycleZoom() {
+        let options = capture.zoomOptions
+        guard !options.isEmpty else { return }
+        let next = options.firstIndex(of: capture.zoom).map { ($0 + 1) % options.count } ?? 0
+        capture.setZoom(options[next])
     }
 
     /// ".5" / "1" / "2" while idle; the selected stop picks up the "×" the way Camera does.

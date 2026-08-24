@@ -143,6 +143,14 @@ final class Onboarding {
         didSet { UserDefaults.standard.set(answers, forKey: Self.answersKey) }
     }
 
+    /// Set the moment onboarding hands the app over, and read once by the session list
+    /// on the other side of it. Paying is the end of being asked things and the start of
+    /// using the thing — so the app opens on a session already begun rather than on an
+    /// empty list with a button on it. Deliberately not written to defaults: it is a
+    /// hand-off between two screens in one run, not a fact about the account, and a
+    /// relaunch a week later should open on the list like every other launch.
+    var startsFirstSession = false
+
     /// Whether the walkthrough's note has everything in it. Not a phase change of its
     /// own — leaving the tutorial is always a tap — this only decides whether that tap
     /// says Skip or Done. Follows the note in both directions, so emptying it puts the
@@ -192,7 +200,7 @@ final class Onboarding {
     /// this one; it is now the bottom of this one, so a purchase made there is the end
     /// of the flow. The paywall itself is still built and still shown — over a sixth
     /// session, and to anybody whose subscription isn't current.
-    func finishProfile() { phase = Self.next(after: .profile) }
+    func finishProfile() { handOff(from: .profile) }
 
     /// Back out of the walkthrough into the quiz — onto its last question. The index is
     /// left where the quiz ended for exactly this: back is one step back, not a return
@@ -206,7 +214,21 @@ final class Onboarding {
 
     /// Paid, and into the walkthrough — or, with the walkthrough out of the flow,
     /// straight into the app, which is what was just bought.
-    func finishPaywall() { phase = Self.next(after: .paywall) }
+    func finishPaywall() { handOff(from: .paywall) }
+
+    /// Out of the last screen of the flow into whatever follows it. When what follows
+    /// is the app itself, the first session is asked for on the way through: nothing is
+    /// created here — the list is the only place a note is ever made — this only says
+    /// that the app is being opened for the first time rather than returned to.
+    private func handOff(from phase: Phase) {
+        let next = Self.next(after: phase)
+        // Off the first-run wall only. `.paywall` is the returning one — a lapsed
+        // subscription paid up again — and somebody with a year of sessions behind
+        // them reopening the app is not asking to be put in a check-in for the next
+        // one; they came back to what they already had.
+        if next == .done, phase == .profile { startsFirstSession = true }
+        self.phase = next
+    }
 
     /// What follows a screen once the screens that are switched off are stepped over.
     private static func next(after phase: Phase) -> Phase {
@@ -225,6 +247,7 @@ final class Onboarding {
         // The screens already reported are forgotten first, so a second pass through
         // the flow in one launch reports every one of them again.
         OnboardingAnalytics.reset()
+        startsFirstSession = false
         phase = .quiz; quizIndex = 0; answers = [:]; hasSeenIntro = false
     }
 }

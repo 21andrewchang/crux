@@ -21,7 +21,9 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
     @Published private(set) var status: Status = .configuring
     @Published private(set) var elapsed: TimeInterval = 0
     /// Zoom the way the user reads it — 1 means "1×", not the raw device factor.
-    @Published private(set) var zoom: CGFloat = 1
+    /// Starts on the stop the camera opens at, so the bar's lens button reads right
+    /// from the first frame rather than after the session finishes configuring.
+    @Published private(set) var zoom: CGFloat = CaptureController.preferredZoom
     /// The stops offered by the zoom picker; empty when there's nothing to pick.
     @Published private(set) var zoomOptions: [CGFloat] = []
 
@@ -116,7 +118,7 @@ final class CaptureController: NSObject, ObservableObject, @unchecked Sendable {
     }
 
     /// Zoom the camera opens at when the phone can reach it.
-    private static let preferredZoom: CGFloat = 0.5
+    static let preferredZoom: CGFloat = 0.5
 
     // MARK: Zoom
 

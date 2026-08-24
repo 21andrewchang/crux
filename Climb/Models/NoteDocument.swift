@@ -60,7 +60,9 @@ enum NoteDocument {
     /// Marks a heading's line as folded: everything under it, down to the next
     /// heading of either kind, is styled away to nothing. An attribute on the line's
     /// characters so it rides through editing like `noteQuote` does — but display
-    /// only, never serialized, so a reopened note starts unfolded.
+    /// only, never serialized: a note reopens folded exactly where the document it is
+    /// rebuilt from says it should, which is nowhere for a session still running and
+    /// every climb for one that has been ended (`foldsClimbs`).
     static let foldedHeading = NSAttributedString.Key("climbFoldedHeading")
 
     /// A climb heading sits under the attempts it heads in size — 21 bold section,
@@ -463,10 +465,16 @@ enum NoteDocument {
     /// never drift out of alignment. A marker that `climbName` resolves instead is a
     /// legacy stored-climb heading: its name comes in as an inline heading line, and
     /// the ID is gone on the next save.
+    ///
+    /// `foldsClimbs` is what a finished session comes back as: every climb folded to
+    /// its name, so the page reads as the list of problems worked rather than as the
+    /// whole log of them. Sections are never folded — they are the shape of the
+    /// session and folding them would hide the climbs along with everything else.
     static func attributedString(for session: ClimbSession,
                                  tab: NoteTab = .main,
                                  climbName: (UUID) -> String? = { _ in nil },
                                  makeCheckIn: () -> CheckInAttachment? = { nil },
+                                 foldsClimbs: Bool = false,
                                  makeAttachment: (UUID) -> NSTextAttachment?) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var idIndex = 0
@@ -505,6 +513,14 @@ enum NoteDocument {
             let line = text.lineRange(for: NSRange(location: start, length: 0))
             if line.length > 0 {
                 result.addAttribute(sectionHeader, value: true, range: line)
+            }
+        }
+        if foldsClimbs {
+            for start in headingStarts where start < result.length {
+                let line = text.lineRange(for: NSRange(location: start, length: 0))
+                if line.length > 0 {
+                    result.addAttribute(foldedHeading, value: true, range: line)
+                }
             }
         }
 

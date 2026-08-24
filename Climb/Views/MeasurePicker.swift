@@ -496,6 +496,7 @@ private struct Ladder: View {
             ZStack {
                 ForEach(rungs(around: position), id: \.self) { rung in
                     let delta = Double(rung) - position
+                    let tier = GradeTier.of(Double(rung))
                     Text(scale.text(Double(rung)))
                         // The same face the profile sets a grade in, so a rung on this
                         // ladder and the grade that comes back out of it are one thing
@@ -504,9 +505,11 @@ private struct Ladder: View {
                         .tracking(-1.5)
                         .monospacedDigit()
                         // Each rung in its rank's metal, so scrubbing the ladder runs
-                        // bronze to purple and the grade you stop on is already set the
-                        // way the profile will hand it back to you.
-                        .foregroundStyle(.metal(GradeTier.of(Double(rung)).color))
+                        // bronze to purple to red and out to pearl, and the grade you
+                        // stop on is already set the way the profile will hand it back
+                        // to you.
+                        .foregroundStyle(tier.fill)
+                        .flaked(tier)
                         .scaleEffect(1 - Self.shrink * min(abs(delta), 1))
                         .opacity(1 / (1 + Self.falloff * abs(delta)))
                         // Up the screen is up the ladder, so a rung harder than the

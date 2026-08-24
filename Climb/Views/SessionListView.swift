@@ -79,6 +79,11 @@ struct SessionListView: View {
             }
             .onAppear { isAtRoot = true }
             .onDisappear { isAtRoot = false }
+            // Straight off the paywall into a session. Paying is somebody saying they
+            // want to use this, and the honest answer to that is the check-in, not a
+            // list with one button on it: the first thing the app does with the money
+            // is start the thing it was bought for.
+            .task { startFirstSessionIfNeeded() }
             .navigationTitle("Sessions")
             .searchable(text: $searchText, prompt: "Search")
             // PostHog: track when a search query is submitted
@@ -148,7 +153,16 @@ struct SessionListView: View {
                         try? modelContext.save()
                         open(session)
                     },
-                    onSkip: { open(session) })
+                    onSkip: { open(session) },
+                    // Answered, not climbing. The check-in is kept and the cover comes
+                    // down onto the list — the session is there, waiting, rather than
+                    // pushed open in front of somebody who has just said not yet.
+                    onLater: { answers in
+                        session.checkIn = answers
+                        session.updatedAt = Date()
+                        try? modelContext.save()
+                        checkingIn = nil
+                    })
             }
         }
         .bottomBarHost(barModel)
@@ -262,55 +276,60 @@ struct SessionListView: View {
         goal.bodyPreview ?? Goals.placeholder
     }
 
+    /// What the page says with nothing on it. The first session opens itself now — off
+    /// the wall, straight into the check-in — so this is no longer the front door it was
+    /// written as: it is what is left after Later, or after the last session is deleted.
+    /// Which makes it a prompt rather than a landing, and it is set as one.
     private var emptyState: some View {
-        ContentUnavailableView {
-            // The compose mark rather than a climber: the thing missing from this
-            // screen is a note, and the glyph that says so is the one in the corner
-            // that makes them — the same mark on the button under it.
-            Label {
-                // Down to the size of the mark above it and set in the same grey: the
-                // line is a caption on the button, not a headline over the page. A
-                // large bright title here reads as the most important thing on a
-                // screen whose only point is the one button under it.
-                Text("Start Your First Session")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.paper.opacity(0.3))
-            } icon: {
-                // Faint, because it is the least important thing here. The mark is
-                // saying what the screen is, not asking to be pressed — the button
-                // under it is the only thing on this page worth reaching for, and a
-                // full-strength glyph above it competes for the same attention.
-                Image(systemName: "square.and.pencil")
-                    .foregroundStyle(Color.paper.opacity(0.3))
+        Button(action: createSession) {
+            ContentUnavailableView {
+                Label {
+                    // Big, because there is nothing else here. The line was sized down
+                    // to a caption when it sat above a white capsule that was the only
+                    // thing worth pressing — with the capsule gone it is the thing being
+                    // pressed, and a title is what a page with one thing on it says.
+                    Text("Start Your First Session")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(Color.paper)
+                } icon: {
+                    // Still faint. The mark says what the screen is; the words say what
+                    // to do about it.
+                    Image(systemName: "square.and.pencil")
+                        .foregroundStyle(Color.paper.opacity(0.3))
+                }
+            } description: {
+                // The whole block is the button, so the instruction is the affordance:
+                // dimmed rather than lightened, because it is the footnote under the
+                // title and not a second thing to decide between.
+                Text("Tap to continue")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(Color.paper.opacity(0.35))
             }
-        } actions: {
-            // The same button the wall closes on — black on paper, capsule, 17pt
-            // semibold — so the one press worth making looks the same wherever the
-            // app puts it in front of you.
-            Button(action: createSession) {
-                Text("Continue")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 15)
-                    .background(Color.paper, in: .capsule)
-            }
-            .buttonStyle(.plain)
-            // The same 24pt gutter the rest of the app sets its full-width buttons in,
-            // and a gap above it — `ContentUnavailableView` sets its actions tight
-            // under the label, which reads as the button hanging off the text.
-            .padding(.horizontal, 24)
-            .padding(.top, 14)
+            // Nothing is drawn between the words and the touch, so the gaps between
+            // them have to take the tap along with the glyphs.
+            .contentShape(.rect)
         }
-        // Up off the centre line. Dead centre puts the button in the middle of the
-        // glass, which is where a thumb rests rather than where the eye lands first —
-        // and the page reads better with the weight above the halfway mark and room
-        // left under it.
+        .buttonStyle(.plain)
+        // Up off the centre line. Dead centre puts the words in the middle of the
+        // glass, which is where a thumb rests rather than where the eye lands first.
         .offset(y: -56)
     }
 
     private var noResultsState: some View {
         ContentUnavailableView.search(text: searchText)
+    }
+
+    /// The one session nobody asks for. Onboarding sets the flag as it hands over off
+    /// the first-run wall, and this is the only place that reads it — so it fires once,
+    /// on the launch that just came through the flow, and never again. Whether the list
+    /// is empty is not asked here: the flag already means first run, and a debug pass
+    /// through the flow with last week's sessions still on file should behave like the
+    /// real thing rather than quietly skip the part being tested.
+    private func startFirstSessionIfNeeded() {
+        let onboarding = Onboarding.shared
+        guard onboarding.startsFirstSession else { return }
+        onboarding.startsFirstSession = false
+        createSession()
     }
 
     /// Compose.

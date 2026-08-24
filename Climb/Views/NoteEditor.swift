@@ -83,6 +83,12 @@ final class NoteEditorController {
         coordinator?.setNotes(notes, for: id)
     }
 
+    /// Folds every climb on this page and closes every attempt under it — what the
+    /// session being ended does to each of its documents.
+    func collapseClimbs() {
+        coordinator?.collapseClimbs()
+    }
+
     func endEditing() {
         coordinator?.textView?.resignFirstResponder()
     }
@@ -265,7 +271,11 @@ struct NoteEditor: UIViewRepresentable {
                                                              // Only the check-in page opens with the card.
                                                              guard self?.parent.tab.showsCheckIn == true else { return nil }
                                                              return self?.makeCheckInAttachment()
-                                                         }) { [weak self] id in
+                                                         },
+                                                         // An ended session is done being written: it comes
+                                                         // back as its list of climbs, each one a tap from
+                                                         // everything logged under it.
+                                                         foldsClimbs: parent.session.endedAt != nil) { [weak self] id in
                 self?.makeAttachment(for: id)
             }
             // `textStorage`, not `attributedText`: assigning to the latter empties the
@@ -2220,6 +2230,63 @@ struct NoteEditor: UIViewRepresentable {
                 start = run.location
             }
             return max(start - 1, 0)
+        }
+
+        /// Folds every climb on the page at once, and closes the notes under every
+        /// attempt while it is at it — what ending the session does to the note.
+        ///
+        /// Sections are left alone: they are the shape of the session rather than
+        /// anything logged, and a folded one would take its climbs down with it, so
+        /// there would be nothing left to open. A restyle like `toggleFold`, so the
+        /// text is untouched and nothing lands on the undo stack; what makes it stick
+        /// is that the note rebuilds folded from then on (see `foldsClimbs`).
+        func collapseClimbs() {
+            guard let textView else { return }
+            let storage = textView.textStorage
+            guard storage.length > 0 else { return }
+            let full = NSRange(location: 0, length: storage.length)
+            let text = storage.string as NSString
+
+            // Read before anything is written: enumerating attributes over storage
+            // that is being restyled underneath is not a thing to do.
+            var headings: [NSRange] = []
+            storage.enumerateAttribute(NoteDocument.climbHeader, in: full) { value, range, _ in
+                guard value != nil else { return }
+                var location = text.lineRange(for: NSRange(location: range.location, length: 0)).location
+                while location < NSMaxRange(range) {
+                    let line = text.lineRange(for: NSRange(location: location, length: 0))
+                    if headings.last != line { headings.append(line) }
+                    location = NSMaxRange(line)
+                }
+            }
+            var attempts: [AttemptAttachment] = []
+            storage.enumerateAttribute(.attachment, in: full) { value, _, _ in
+                if let attempt = value as? AttemptAttachment { attempts.append(attempt) }
+            }
+            guard !headings.isEmpty || !attempts.isEmpty else { return }
+
+            // The same reason a single fold takes the keyboard with it: a caret left
+            // inside a group that has just collapsed sits in hairline text.
+            textView.resignFirstResponder()
+
+            isRestyling = true
+            let selected = textView.selectedRange
+            let restyle = { [self] in
+                for line in headings {
+                    storage.addAttribute(NoteDocument.foldedHeading, value: true, range: line)
+                }
+                for attempt in attempts { attempt.areNotesFolded = true }
+                NoteDocument.applyStyles(to: storage)
+            }
+            if let note = textView as? NoteTextView {
+                note.holdingScrollPosition(restyle)
+            } else {
+                restyle()
+            }
+            let caret = min(selected.location, storage.length)
+            textView.selectedRange = NSRange(location: visibleLocation(forCaretAt: caret) ?? caret, length: 0)
+            isRestyling = false
+            syncTypingAttributes()
         }
 
         /// Folds the group under a heading down to just the heading, or unfolds it.

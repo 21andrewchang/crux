@@ -420,7 +420,7 @@ struct ProfileView: View {
             // goal grade arriving beside it — and on a sheet where no goal ever comes,
             // a number mixed halfway to black is just a grade drawn wrong. The wall's
             // copy of this screen is untouched: it still has something to recede for.
-            grade(grade(for: "grade"), tint: tint, dim: !isReview)
+            grade(grade(for: "grade"), tier: tier, dim: !isReview)
                 // Last of all, and on the same spring the corners land on, so it reads
                 // as the seventh beat of the same reveal rather than as a caption.
                 .scaleEffect(gradeIn ? 1 : 0.6)
@@ -450,7 +450,7 @@ struct ProfileView: View {
                     // one above, and SwiftUI's default insert fading underneath it was
                     // the hitch on the way in.
                     .transition(.identity)
-                grade(grade(for: "goalGrade"), tint: dreamTint, shining: true)
+                grade(grade(for: "goalGrade"), tier: dreamTier, shining: true)
                     .scaleEffect(goalIn ? 1 : 0.7)
                     .opacity(goalIn ? 1 : 0)
                     .transition(.identity)
@@ -463,25 +463,33 @@ struct ProfileView: View {
         .frame(height: gradeSize * 1.24)
     }
 
-    /// Heavy, tight, and the system face rather than the rounded one — a grade is a
-    /// hard number and the soft face was reading as a toy. The negative tracking is what
-    /// keeps two characters at this size looking set rather than spaced.
+    /// Bold, tight, and the system face rather than the rounded one — a grade is a
+    /// hard number and the soft face was reading as a toy. Bold rather than heavy: at
+    /// this size the heaviest weight closes up the counters and the number reads as a
+    /// block before it reads as a grade. The negative tracking is what keeps two
+    /// characters at this size looking set rather than spaced.
     ///
     /// The two of them are not drawn the same way, because they are not the same kind of
     /// fact. What you climb now is set smaller and duller — it is the thing being left
     /// behind, and it should look like it. What you're after is the size it is and lit
     /// besides: a band of light crosses it, over and over.
-    private func grade(_ text: String, tint: Color,
+    private func grade(_ text: String, tier: GradeTier,
                        dim: Bool = false, shining: Bool = false) -> some View {
         let label = Text(text)
-            .font(.system(size: dim ? gradeSize * 0.7 : gradeSize, weight: .heavy))
+            .font(.system(size: dim ? gradeSize * 0.7 : gradeSize, weight: .bold))
             .tracking(-2)
         return label
             // Shaded rather than plated: the colour itself at the top, a little of it
             // taken away by the bottom. The chrome ramp that was here first — highlight,
             // shadow, second highlight — read as a sticker, which is what happens when
             // type at this size pretends to be metal.
-            .foregroundStyle(.metal(dim ? tint.mix(with: .black, by: 0.45) : tint))
+            // Pearl is the one rank a flat colour can't stand in for, so the fill
+            // comes off the tier rather than off a colour — and the flake with it.
+            // Dimmed, it drops back to a shaded colour: the number being left behind
+            // is not the place to spend a surface.
+            .foregroundStyle(dim ? AnyShapeStyle(LinearGradient.metal(tier.color.mix(with: .black, by: 0.45)))
+                                 : AnyShapeStyle(tier.fill))
+            .flaked(dim ? .bronze : tier)
             .overlay { if shining { sheen(label) } }
             // One soft shadow under it, black rather than coloured, so the number sits
             // above the screen instead of glowing on it. Lighter on the card: that
@@ -614,7 +622,10 @@ struct ProfileView: View {
     /// The profile's colour is the tier its grade sits in — so the shape a V4 climber
     /// is shown is blue and the one a V10 climber is shown is red, and the colour is
     /// already telling them where they are before a single label is read.
-    private var tint: Color { GradeTier.of(number(for: "grade")).color }
+    private var tint: Color { tier.color }
+
+    /// The rank itself, for anything that wants the surface rather than the colour.
+    private var tier: GradeTier { GradeTier.of(number(for: "grade")) }
 
     /// The same rank colour, off the answers on file rather than off an instance — so
     /// anything drawing around the profile can be lit in it without building the view.
@@ -626,7 +637,10 @@ struct ProfileView: View {
 
     /// The dream's, likewise — which is what makes the goal grade's own tier the thing
     /// the second shape is drawn in rather than one aspirational purple for everybody.
-    private var dreamTint: Color { GradeTier.of(number(for: "goalGrade")).color }
+    private var dreamTint: Color { dreamTier.color }
+
+    /// The dream's rank, likewise.
+    private var dreamTier: GradeTier { GradeTier.of(number(for: "goalGrade")) }
 
     /// A ladder answer as the number it is. The quiz writes both grades as "V6".
     private func number(for key: String) -> Double {
@@ -1084,10 +1098,26 @@ struct ProfileView: View {
         infoIn = true
         gradeIn = true
         finished = true
-        guard reaches.isEmpty || reaches.allSatisfy({ $0 <= Self.seed }) else { return }
-        reaches = Array(repeating: Self.seed, count: Self.pillars.count)
-        // One frame with the dot on screen, so the shape has somewhere to open from.
-        try? await Task.sleep(for: .milliseconds(32))
+        guard reaches.isEmpty || reaches.allSatisfy({ $0 <= Self.dot }) else { return }
+        // A point, not a small hexagon. `seed` is sized so that a shape being built a
+        // corner at a time has area to build from — which is the wall's reveal, not
+        // this one. Here nothing is built: the whole shape opens at once, so what it
+        // opens *from* wants to be as close to nothing as can still be drawn. At seed
+        // the card arrives with a little green hexagon sitting in the middle of it,
+        // which reads as the answer already being on screen and then changing its mind.
+        reaches = Array(repeating: Self.dot, count: Self.pillars.count)
+        // Held until the card has landed. The shape used to open a frame after the card
+        // was inserted, which put the two movements on screen at once — the card still
+        // rising while the chart grew out of it — and neither one read as itself: a
+        // shape that expands on a surface that is also travelling is just more motion.
+        // Waiting the card's own arrival out makes the chart something the card does
+        // once it is still, rather than something it does on the way in.
+        //
+        // A beat past the landing rather than exactly on it. Timed to the frame, the
+        // shape starts while the last of the ease-out is still being read, and it comes
+        // off as the two having been meant to overlap and missed.
+        try? await Task.sleep(for: .seconds(ProfileCard.arrival + 0.08))
+        guard !Task.isCancelled else { return }
         withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) {
             reaches = spokes.map { $0 / Double(Self.bands.count) }
         }

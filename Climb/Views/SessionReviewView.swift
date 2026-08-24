@@ -35,6 +35,10 @@ struct SessionReviewView: View {
     /// under it rather than behind it.
     var topInset: CGFloat
     var onChange: () -> Void
+    /// The session has just been called. The note folds itself down behind this page
+    /// — every climb closed, every attempt closed under it — so what is left when you
+    /// swipe back is the list of what you climbed rather than the whole log of it.
+    var onEnd: () -> Void = {}
 
     /// Everything still in the note. A deleted row keeps its record and its video, so
     /// counting the relationship raw would keep counting attempts that were taken back.
@@ -102,12 +106,24 @@ struct SessionReviewView: View {
             effort
             ender
         }
+        // Centred in the room between the pills and the bar, so the air above the
+        // clock and the air under the last row match. The height is measured off the
+        // screen rather than asked for with a `maxHeight: .infinity` — inside the
+        // paging view that carries the four pages, an infinite frame here came back
+        // the size of the content and the page stayed hung off the top.
+        .frame(maxWidth: .infinity, minHeight: room, alignment: .leading)
         .padding(.horizontal, 20)
-        .padding(.top, topInset + 8)
+        .padding(.top, topInset)
         // Clear of the bar the note carries at the bottom of every page.
         .padding(.bottom, 108)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black)
+    }
+
+    /// What is left of the screen once the header at the top and the bar at the bottom
+    /// have taken theirs.
+    private var room: CGFloat {
+        max(0, UIScreen.main.bounds.height - topInset - 108)
     }
 
     // MARK: - The clock
@@ -238,31 +254,17 @@ struct SessionReviewView: View {
 
     // MARK: - Ending it
 
-    /// The bottom of the page, and the end of the session. Before: one button. After:
-    /// the time it was called, and a quiet way back — a session ended by a pocket-tap
-    /// has to be reopenable, and burying that behind a confirmation on the way *in*
-    /// would put a dialog between a tired climber and the one thing this page does.
+    /// The bottom of the page, and the end of the session: one button, and once it is
+    /// pressed, nothing. The ended time is already on the clock above, and the way back
+    /// into an ended session belongs somewhere other than under the button that ends it.
     @ViewBuilder
     private var ender: some View {
-        if let endedAt = session.endedAt {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Ended \(endedAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.paper.opacity(0.45))
-                Button("Reopen session") {
-                    session.endedAt = nil
-                    onChange()
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Color.paper.opacity(0.8))
-                .buttonStyle(.plain)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
+        if session.endedAt == nil {
             Button {
                 session.endedAt = Date()
                 Haptics.sessionEnded()
                 onChange()
+                onEnd()
             } label: {
                 Text("End session")
                     .font(.headline)

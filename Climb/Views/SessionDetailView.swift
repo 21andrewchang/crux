@@ -67,7 +67,6 @@ struct SessionDetailView: View {
     @State private var isConfirmingDelete = false
     @State private var isConfirmingRowDelete = false
     /// Camera tapped while the rest countdown is still running.
-    @State private var isConfirmingEarlyAttempt = false
     @State private var doomedRowCount = 0
     /// Attempts whose rows have been removed but whose deletion is still undoable.
     @State private var detached: [DetachedAttempt] = []
@@ -88,8 +87,24 @@ struct SessionDetailView: View {
         // The check-in happens over the whole screen before the note is ever on it
         // (`CheckInFlow`), so by the time a note opens there is nothing left to answer
         // — a session begins where a session begins, which is the warm-up. The
-        // walkthrough is taught on the main page and opens there instead.
-        _tab = State(initialValue: session.id == Tutorial.id ? .main : .warmUp)
+        // walkthrough is taught on the main page and opens there instead, and a
+        // session already ended opens on the last page: there is nothing left to log
+        // in one, so it is opened to be read rather than written in.
+        _tab = State(initialValue: Self.openingTab(for: session))
+    }
+
+    /// Where the note opens. The walkthrough owns the main page; a finished session
+    /// opens on its review; everything else opens where a session starts.
+    private static func openingTab(for session: ClimbSession) -> NoteTab {
+        if session.id == Tutorial.id { return .main }
+        return session.endedAt != nil ? .review : .warmUp
+    }
+
+    /// Folds the whole note down, page by page. Every editor is asked, not just the
+    /// one on screen: a session is climbed across the warm-up and the main page both,
+    /// and coming back to a page that never got the message would find it open.
+    private func collapseNote() {
+        for controller in controllers { controller.collapseClimbs() }
     }
 
     /// The page holding the keyboard, if the note is being typed in at all.
@@ -235,12 +250,6 @@ struct SessionDetailView: View {
                  ? "The video will not be deleted."
                  : "Their videos will not be deleted.")
         }
-        .alert("Still Resting", isPresented: $isConfirmingEarlyAttempt) {
-            Button("Cancel", role: .cancel) {}
-            Button("Yes", role: .destructive) { pendingAttemptID = UUID() }
-        } message: {
-            Text("Are you sure you start an attempt?")
-        }
         // A sheet, same as the replay page, so recording and replaying an attempt are
         // one shape on screen. The flow decides for itself when swipe-to-dismiss is
         // allowed — free before recording starts, off once a take is on the line.
@@ -257,7 +266,17 @@ struct SessionDetailView: View {
                     // moved — so it is asked to read itself again.
                     editorController.refreshCheckIn()
                 },
-                onSkip: { isCheckingIn = false })
+                onSkip: { isCheckingIn = false },
+                // Reopened from inside the note there is nowhere else for either button
+                // to go: the session is already open behind the cover, so Later and
+                // Start session are the same door from here.
+                onLater: { answers in
+                    session.checkIn = answers
+                    session.updatedAt = Date()
+                    isCheckingIn = false
+                    saveChanges()
+                    editorController.refreshCheckIn()
+                })
         }
         .sheet(item: $pendingAttemptID, onDismiss: closeAttemptSheet) { id in
             AttemptFlowView(
@@ -366,7 +385,8 @@ struct SessionDetailView: View {
         if page == .review {
             SessionReviewView(session: session,
                               topInset: headerBottom,
-                              onChange: saveChanges)
+                              onChange: saveChanges,
+                              onEnd: collapseNote)
         } else {
             editor(for: page)
         }
@@ -539,12 +559,10 @@ struct SessionDetailView: View {
     // MARK: Attempt lifecycle
 
     private func startAttempt() {
-        // Mid-countdown, recording means cutting the rest short — check first.
-        if stopwatch.hasStarted, stopwatch.remaining(at: Date()) > 0 {
-            isConfirmingEarlyAttempt = true
-        } else {
-            pendingAttemptID = UUID()
-        }
+        // Mid-countdown or not, the camera opens straight away — cutting a rest short
+        // is the shutter's business, not the door's, so the question is asked there
+        // (see `AttemptFlowView`) by the button that actually does it.
+        pendingAttemptID = UUID()
     }
 
     /// A recording becomes an attempt the moment it lands — there is no "save" step.

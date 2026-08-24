@@ -27,7 +27,12 @@ struct ProfileCard: View {
     /// a cut rather than a move — a thing that fast has no beginning, it is simply
     /// somewhere else. Pulling the first handle out gives the launch a moment to exist
     /// while leaving the long smooth stop alone.
-    private static let entrance = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.46)
+    ///
+    /// The duration is named on its own because something else waits on it: the shape
+    /// on the card's face holds still until the card has landed, and the only honest
+    /// way to say when that is, is the number the card is actually animating for.
+    static let arrival: TimeInterval = 0.46
+    private static let entrance = Animation.timingCurve(0.22, 1, 0.36, 1, duration: arrival)
 
     /// How far below its resting place the card starts.
     ///
@@ -39,10 +44,30 @@ struct ProfileCard: View {
     /// is something that happens on screen rather than off it.
     private static let travel: CGFloat = 480
 
-    /// Putting it down is not an event. An exit that takes as long as the arrival makes
-    /// the page you asked for wait on an animation you have already stopped watching,
-    /// so this is roughly a third of it and out of the way.
-    private static let exit = Animation.easeOut(duration: 0.12)
+    /// How far the card drops on the way out — further than it rose.
+    ///
+    /// The arrival's 480 is a distance chosen for how the curve reads, not for where the
+    /// edge of the screen is, and it does not actually clear it: a card 468 tall sitting
+    /// in the middle of the phone still has its top third on screen 480 points down. On
+    /// the way in that is invisible, because it happens in the first few frames at the
+    /// fastest part of the move. On the way out it is the last thing you see — the card
+    /// stops being drawn while a piece of it is still in the frame, which is the hiccup.
+    /// Half the screen plus half the card, with room for the shadow, is the distance at
+    /// which there is nothing left to cut.
+    private static let drop: CGFloat = 760
+
+    /// The same slide, back down, and quick about it.
+    ///
+    /// The path is the arrival's reversed but the timing is not, and neither end of the
+    /// arrival's curve survives contact with an exit. A true time-reversal is an ease-in,
+    /// which hangs where it stands before it goes. Keeping the ease-out is worse: it puts
+    /// a long crawl at the end, and the end is exactly where the card is being taken off
+    /// screen — a card that is barely moving when it is removed reads as a dropped frame
+    /// rather than a departure. So it leans forward instead: away immediately, still
+    /// gaining speed at the moment it leaves, so there is no frame where it is slow
+    /// enough for the cut to be seen.
+    private static let departure: TimeInterval = 0.2
+    private static let exit = Animation.timingCurve(0.35, 0.15, 0.6, 0, duration: departure)
 
     /// How far off square the card starts, in degrees. Turned away to the left and
     /// swinging flat as it rises — enough to have a face that catches the light on the
@@ -59,7 +84,6 @@ struct ProfileCard: View {
     /// apart from it so letting go can settle from wherever the drag left off without
     /// the two having to be reconciled first.
     @State private var dragAngle: Double = 0
-
     /// The card is one size whichever way up it is. Sized here rather than by whichever
     /// face happens to be taller, or the panel resizes mid-turn — which is the stretch.
     private static let cardHeight: CGFloat = 468
@@ -75,18 +99,15 @@ struct ProfileCard: View {
     /// card being thrown rather than sprung.
 
 
-    /// How long the page takes to go down — slower than the card's arrival, so the card
-    /// is what the eye follows.
+    /// How long the page takes to come up. Going down it rides the card's own exit
+    /// instead: the card is now on screen for the whole of the way out, and a scrim that
+    /// cleared in a tenth of that would drop the page back in behind a card still
+    /// sliding over it.
     private static let dim: TimeInterval = 0.12
 
     var body: some View {
         ZStack {
             scrim
-
-            // Between the dark and the card: over the blurred page rather than in it,
-            // so it stays sharp while everything behind it softens, and it comes and
-            // goes on the card's own clock rather than the page's.
-            rankGlow
 
             ZStack {
                 if isPresented { card }
@@ -103,33 +124,15 @@ struct ProfileCard: View {
         // into your hand rather than a panel being shown, and it lands square whichever
         // way up it was put down.
         .onChange(of: isPresented) { _, up in
-            guard up else { angle = 0; return }
+            // Nothing to do on the way down. Squaring the angle here used to be
+            // invisible under an exit that was over in a tenth of a second; against a
+            // card that now takes the whole slide to leave, a card put down face-up
+            // would flip itself over on the way out. It gets set square below, at the
+            // start of the next arrival, which is the only moment anyone can see it.
+            guard up else { return }
             angle = -Self.entranceTilt
             withAnimation(Self.entrance) { angle = 0 }
         }
-    }
-
-    /// The rank light, across the very bottom of the glass — home indicator and all,
-    /// since the parent ignores the safe area and this is aligned to the bottom of that
-    /// rather than of the content.
-    ///
-    /// Only up while the card is. It is the light the card was brought out under, not a
-    /// permanent feature of the app, and a coloured wash sitting at the foot of the
-    /// session list all day would be decoration that has to be explained.
-    private var rankGlow: some View {
-        EllipticalGradient(
-            colors: [ProfileView.rankTint.opacity(0.34),
-                     ProfileView.rankTint.opacity(0.10),
-                     .clear],
-            center: .bottom,
-            startRadiusFraction: 0,
-            endRadiusFraction: 0.85)
-            .frame(height: 320)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .blendMode(.plusLighter)
-            .opacity(isPresented ? 1 : 0)
-            .animation(isPresented ? Self.entrance : Self.exit, value: isPresented)
-            .allowsHitTesting(false)
     }
 
     private var scrim: some View {
@@ -139,7 +142,9 @@ struct ProfileCard: View {
             .ignoresSafeArea()
             .contentShape(.rect)
             .onTapGesture(perform: onDismiss)
-            .animation(.easeInOut(duration: Self.dim), value: isPresented)
+            .animation(isPresented ? .easeInOut(duration: Self.dim)
+                                   : .easeInOut(duration: Self.departure),
+                       value: isPresented)
     }
 
     /// The whole object turns, not the picture on it.
@@ -166,13 +171,14 @@ struct ProfileCard: View {
         // half-transparent in the middle of the screen never came from anywhere. Coming
         // in off the edge solid means the eye reads a real object entering the frame —
         // it was always there, it was just further down the table than you could see.
-        .transition(.asymmetric(
-            insertion: .offset(y: Self.travel),
-            // Not the way it came. Sliding back down would say it went somewhere and
-            // could be fetched again from there; shrinking away where it stands says it
-            // was only ever being held up, and puts nothing on screen on the way out to
-            // watch instead of the page coming back.
-            removal: .scale(scale: 0.8).combined(with: .opacity)))
+        //
+        // Out the way it came. Shrinking away where it stood was the other version, and
+        // it said the card had been dismissed rather than put down — a thing that
+        // vanishes in place was never anywhere. The same move, back down the same line;
+        // only the distance differs, and only because the exit has to finish the journey
+        // the entrance was allowed to start mid-way through.
+        .transition(.asymmetric(insertion: .offset(y: Self.travel),
+                                removal: .offset(y: Self.drop)))
     }
 
     /// Turning the card by hand.
@@ -366,10 +372,14 @@ struct ProfileCard: View {
     /// is the thing the colour is about.
     private var glow: some View {
         EllipticalGradient(
-            colors: [ProfileView.rankTint.opacity(0.34),
-                     ProfileView.rankTint.opacity(0.11),
+            colors: [glowTint.opacity(0.34),
+                     glowTint.opacity(0.11),
                      .clear],
-            center: .top,
+            // Off-centre to the left, roughly where the grade sits. The light then
+            // reads as coming off the one bright thing on the card rather than off the
+            // top edge in general — and it falls across the chart from that side, which
+            // is the same direction the lit corner says the light is in.
+            center: UnitPoint(x: 0.27, y: 0.0),
             startRadiusFraction: 0,
             endRadiusFraction: 0.78)
             // Stretched a little wide and pulled in vertically, anchored to the top.
@@ -382,6 +392,9 @@ struct ProfileCard: View {
             .blendMode(.plusLighter)
             .allowsHitTesting(false)
     }
+
+    /// The rank colour the card is lit in.
+    private var glowTint: Color { ProfileView.rankTint }
 
     private var panel: some View {
         RoundedRectangle(cornerRadius: Self.radius, style: .continuous)

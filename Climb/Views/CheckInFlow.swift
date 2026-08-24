@@ -17,6 +17,11 @@ struct CheckInFlow: View {
     let onFinish: ([Int]) -> Void
     /// Backing out of the first question — the session still opens, unchecked.
     let onSkip: () -> Void
+    /// Answered, but not climbing yet. The check-in closes on the list rather than on
+    /// the note: what was said about the body is worth keeping whether or not the
+    /// session starts on the back of it, and a check-in that only counts if you go
+    /// straight from it to the wall is one people learn to put off answering.
+    let onLater: ([Int]) -> Void
 
     /// What is already stored, so reopening this to change one answer starts from what
     /// was said rather than from nothing.
@@ -41,7 +46,10 @@ struct CheckInFlow: View {
     @ScaledMetric(relativeTo: .subheadline) private var iconColumn: CGFloat = 18
     @ScaledMetric(relativeTo: .subheadline) private var iconGlyph: CGFloat = 13
 
-    init(answers: [Int] = [], onFinish: @escaping ([Int]) -> Void, onSkip: @escaping () -> Void) {
+    init(answers: [Int] = [],
+         onFinish: @escaping ([Int]) -> Void,
+         onSkip: @escaping () -> Void,
+         onLater: @escaping ([Int]) -> Void) {
         let start = CheckIn.migrating(answers)
         _answers = State(initialValue: start)
         // Reopened on a check-in already answered, this opens on its score rather than
@@ -49,6 +57,7 @@ struct CheckInFlow: View {
         _index = State(initialValue: CheckIn.readiness(start) == nil ? 0 : CheckIn.fields.count)
         self.onFinish = onFinish
         self.onSkip = onSkip
+        self.onLater = onLater
     }
 
     private var isScoring: Bool { index >= CheckIn.fields.count }
@@ -223,23 +232,52 @@ struct CheckInFlow: View {
 
     @ViewBuilder
     private var footer: some View {
-        HStack {
-            arrow("chevron.left", enabled: true, action: back)
-            Spacer()
-            if isScoring {
-                Button(action: finish) {
-                    Text("Start session")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 26)
-                        .frame(height: 56)
-                        .background(.white, in: .capsule)
-                }
-                .buttonStyle(.plain)
-            }
+        Group {
+            if isScoring { verdictFooter } else { questionFooter }
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 8)
+    }
+
+    /// The end of the flow, and the only screen in it with a decision on it rather than
+    /// an answer: the number has been read, and the question is now whether you are
+    /// climbing on the back of it.
+    ///
+    /// Start session takes the full width because it is what the whole flow was for —
+    /// a capsule sized to its own words reads as one option among several, and there is
+    /// only one thing this screen is for. Later sits above it rather than beside it,
+    /// dimmed rather than lightened: the way out is always there and never the thing
+    /// being offered.
+    private var verdictFooter: some View {
+        VStack(spacing: 2) {
+            Button(action: later) {
+                Text("Later")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.35))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            Button(action: finish) {
+                Text("Start session")
+                    .font(.headline)
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .background(.white, in: .capsule)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// One question to a screen answers itself on a tap, so the only thing the bar
+    /// carries on the way down is the way back up it.
+    private var questionFooter: some View {
+        HStack {
+            arrow("chevron.left", enabled: true, action: back)
+            Spacer()
+        }
     }
 
     private func arrow(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
@@ -269,6 +307,16 @@ struct CheckInFlow: View {
         }
     }
 
+    /// Answered but not starting. The answers are kept exactly as Start session keeps
+    /// them — the difference is only where the screen closes onto.
+    private func later() {
+        // PostHog: track a check-in answered without the session starting off it
+        PostHogSDK.shared.capture("check_in_deferred", properties: [
+            "readiness_score": CheckIn.readiness(answers) as Any,
+        ])
+        onLater(answers)
+    }
+
     private func finish() {
         // PostHog: track check-in completion with the readiness score
         let readiness = CheckIn.readiness(answers)
@@ -287,7 +335,8 @@ extension CheckIn {
     ///
     /// Blue sits past green, which is not how a risk scale works — nothing is safer
     /// than safe — but is exactly how a rank works, and the app has already taught this
-    /// one: `GradeTier` runs bronze, silver, gold, platinum, diamond blue, elite purple,
+    /// one: `GradeTier` runs bronze, silver, gold, platinum, diamond blue, elite purple
+    /// and on to ruby and pearl,
     /// so blue already means the tier above around here. It is worth the exception
     /// because five answers on four colours wastes the top step: green covering both
     /// the best answer and the merely good one is the card declining to tell you the
