@@ -124,10 +124,18 @@ struct ClimbDetailView: View {
     }
 
     private func deleteClimb() {
-        WallStore.delete(climb)
-        modelContext.delete(climb)
-        try? modelContext.save()
+        // This view is still bound to the Climb as the sheet dismisses; laying out
+        // against a deleted model traps (see SessionDetailView.deleteSession). Dismiss
+        // first, then destroy the record once that layout is over.
+        let climb = climb
+        let context = modelContext
         onDone()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            WallStore.delete(climb)
+            context.delete(climb)
+            try? context.save()
+        }
     }
 
     // MARK: - Wall photo & hold detection

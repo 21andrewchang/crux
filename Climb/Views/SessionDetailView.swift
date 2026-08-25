@@ -651,13 +651,20 @@ struct SessionDetailView: View {
         editorController.removeMarker(for: id)
         detached.removeAll { $0.attempt.id == id }
         session.attempts.removeAll { $0.id == id }
-        if let doomed {
-            VideoStore.delete(doomed)
-            modelContext.delete(doomed)
-        }
         editedAttemptID = nil
         attemptRestStart = nil
-        try? modelContext.save()
+        // The review sheet is still bound to this Attempt as it dismisses or swaps back
+        // to the camera; laying out against a deleted model traps (see deleteSession).
+        // Let that layout finish, then destroy the record and its video.
+        let context = modelContext
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            if let doomed {
+                VideoStore.delete(doomed)
+                context.delete(doomed)
+            }
+            try? context.save()
+        }
     }
 
     /// The sheet is gone: the rest this attempt got is however long the page was up,
